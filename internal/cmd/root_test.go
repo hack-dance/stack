@@ -834,6 +834,32 @@ func TestVersionCommandPrintsBuildInfo(t *testing.T) {
 	}
 }
 
+func TestInitFallsBackToRemoteRepoWhenGHRepoViewFails(t *testing.T) {
+	repo := testutil.SetupGitRepo(t)
+	testutil.Run(t, repo, "git", "remote", "add", "origin", "git@github.com-ln:acme/new-repo.git")
+	runtime := newTestRuntime(repo)
+
+	ghStubDir := t.TempDir()
+	ghStubPath := filepath.Join(ghStubDir, "gh")
+	if err := os.WriteFile(ghStubPath, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write gh stub: %v", err)
+	}
+	t.Setenv("PATH", ghStubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	output := executeCommand(t, runtime, "init", "--remote", "origin", "--trunk", "main")
+	if !strings.Contains(output, "repo: acme/new-repo") {
+		t.Fatalf("expected init output to include remote repo slug, got %q", output)
+	}
+
+	state, err := runtime.Store.ReadState(runtime.Context)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if state.Repo != "acme/new-repo" {
+		t.Fatalf("expected state repo acme/new-repo, got %q", state.Repo)
+	}
+}
+
 func TestQueueMergesHealthyBottomBranch(t *testing.T) {
 	repo := testutil.SetupGitRepo(t)
 	remote := filepath.Join(t.TempDir(), "remote.git")

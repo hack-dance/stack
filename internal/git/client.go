@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -191,6 +192,15 @@ func (c *Client) RemoteURL(ctx context.Context, remote string) (string, error) {
 	return c.output(ctx, "remote", "get-url", remote)
 }
 
+func (c *Client) RemoteRepoSlug(ctx context.Context, remote string) (string, error) {
+	remoteURL, err := c.RemoteURL(ctx, remote)
+	if err != nil {
+		return "", err
+	}
+
+	return parseRemoteRepoSlug(remoteURL), nil
+}
+
 func (c *Client) RangeDiff(ctx context.Context, oldBase string, newBranch string) (string, error) {
 	return c.output(ctx, "range-diff", fmt.Sprintf("%s...%s", oldBase, newBranch))
 }
@@ -231,4 +241,41 @@ func (c *Client) runWithEnv(ctx context.Context, env []string, args ...string) (
 	}
 
 	return stdout.String(), nil
+}
+
+func parseRemoteRepoSlug(remoteURL string) string {
+	trimmed := strings.TrimSpace(remoteURL)
+	if trimmed == "" {
+		return ""
+	}
+
+	if parsed, err := url.Parse(trimmed); err == nil && parsed.Scheme != "" {
+		return repoSlugFromPath(parsed.Path)
+	}
+
+	scpPrefix, scpPath, found := strings.Cut(trimmed, ":")
+	if !found || !strings.Contains(scpPrefix, "@") {
+		return ""
+	}
+
+	return repoSlugFromPath(scpPath)
+}
+
+func repoSlugFromPath(path string) string {
+	trimmed := strings.Trim(strings.TrimSpace(path), "/")
+	trimmed = strings.TrimSuffix(trimmed, ".git")
+	if trimmed == "" {
+		return ""
+	}
+
+	parts := strings.Split(trimmed, "/")
+	if len(parts) != 2 {
+		return ""
+	}
+
+	if parts[0] == "" || parts[1] == "" {
+		return ""
+	}
+
+	return strings.Join(parts, "/")
 }
