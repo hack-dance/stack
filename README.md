@@ -34,9 +34,10 @@ drift clearly, and favors repairable workflows over hidden automation.
 
 ## Current Caveats
 
-- restack, queue, and crash recovery now have live sandbox verification, but `sync` and merged-parent repair still need broader live coverage
+- restack, sync, queue, and crash recovery now have live sandbox verification
 - the TUI is intentionally read-only in the current alpha
 - ambiguous merged-parent repair cases stop for review instead of guessing
+- queue defaults to merge commits, but now supports explicit `--strategy merge|squash|rebase`
 
 ## Tooling
 

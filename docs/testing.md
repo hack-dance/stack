@@ -100,6 +100,7 @@ These scripts intentionally mutate the live sandbox repo, then reseed the consum
   - verifies the queue fixture can be reseeded after the PR is merged
 - `run-live-sync.sh`
   - verifies `stack sync --apply` reparents a clean child after its parent PR is merged
+  - verifies a clean two-hop advancement from parent to child to grandchild
   - verifies the child PR base is retargeted on GitHub
   - verifies ambiguous merged-parent cases stop for manual review instead of mutating child metadata or PR base
 - `run-live-conflict.sh`

@@ -126,14 +126,24 @@ func (c *Client) EditPRBase(ctx context.Context, number int, base string) error 
 	return err
 }
 
-func (c *Client) MergePR(ctx context.Context, number int, headOID string) error {
+func (c *Client) MergePR(ctx context.Context, number int, headOID string, strategy string) error {
+	strategyFlag := "--merge"
+	switch strategy {
+	case "merge":
+		strategyFlag = "--merge"
+	case "squash":
+		strategyFlag = "--squash"
+	case "rebase":
+		strategyFlag = "--rebase"
+	}
+
 	_, err := c.run(
 		ctx,
 		"pr",
 		"merge",
 		fmt.Sprintf("%d", number),
 		"--auto",
-		"--merge",
+		strategyFlag,
 		"--match-head-commit",
 		headOID,
 	)

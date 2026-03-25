@@ -721,6 +721,7 @@ stack sync --apply
 
 func newQueueCommand(runtime *stackruntime.Runtime) *cobra.Command {
 	var yes bool
+	var strategy string
 
 	cmd := &cobra.Command{
 		Use:   "queue <branch>",
@@ -728,10 +729,15 @@ func newQueueCommand(runtime *stackruntime.Runtime) *cobra.Command {
 		Long:  "Validate that one tracked branch is ready for trunk handoff, then ask GitHub to auto-merge or enqueue the PR using the current head commit.",
 		Example: strings.TrimSpace(`
 stack queue feature/a
+stack queue feature/a --strategy squash
 stack queue feature/a --yes
 		`),
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if !isValidQueueStrategy(strategy) {
+				return fmt.Errorf("invalid queue strategy %q; expected merge, squash, or rebase", strategy)
+			}
+
 			state, err := runtime.Store.ReadState(runtime.Context)
 			if err != nil {
 				return err
@@ -790,6 +796,7 @@ stack queue feature/a --yes
 			_, _ = fmt.Fprintln(cmd.OutOrStdout(), ui.RenderPreview("Queue handoff", []string{
 				fmt.Sprintf("branch: %s", branch),
 				fmt.Sprintf("pr: #%d", record.PR.Number),
+				fmt.Sprintf("strategy: %s", strategy),
 				fmt.Sprintf("head: %s", headOID),
 			}))
 
@@ -803,12 +810,22 @@ stack queue feature/a --yes
 				}
 			}
 
-			return runtime.GitHub.MergePR(runtime.Context, record.PR.Number, headOID)
+			return runtime.GitHub.MergePR(runtime.Context, record.PR.Number, headOID, strategy)
 		},
 	}
 
 	cmd.Flags().BoolVar(&yes, "yes", false, "Skip confirmation")
+	cmd.Flags().StringVar(&strategy, "strategy", "merge", "Merge strategy: merge, squash, or rebase")
 	return cmd
+}
+
+func isValidQueueStrategy(strategy string) bool {
+	switch strategy {
+	case "merge", "squash", "rebase":
+		return true
+	default:
+		return false
+	}
 }
 
 func runStatus(runtime *stackruntime.Runtime, asJSON bool) error {

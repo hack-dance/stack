@@ -446,6 +446,92 @@ func TestQueueMergesHealthyBottomBranch(t *testing.T) {
 	}
 }
 
+func TestQueueAllowsConfiguredMergeStrategy(t *testing.T) {
+	repo := testutil.SetupGitRepo(t)
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	testutil.Run(t, repo, "git", "init", "--bare", remote)
+	testutil.Run(t, repo, "git", "remote", "add", "origin", remote)
+	testutil.Run(t, repo, "git", "push", "-u", "origin", "main")
+
+	testutil.Run(t, repo, "git", "switch", "-c", "feature/a")
+	testutil.WriteFile(t, filepath.Join(repo, "feature-a.txt"), "feature a\n")
+	testutil.Run(t, repo, "git", "add", "feature-a.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "add feature a")
+	testutil.Run(t, repo, "git", "push", "-u", "origin", "feature/a")
+
+	runtime := newTestRuntime(repo)
+	head, err := runtime.Git.ResolveRef(runtime.Context, "feature/a")
+	if err != nil {
+		t.Fatalf("resolve feature/a head: %v", err)
+	}
+	mainHead, err := runtime.Git.ResolveRef(runtime.Context, "main")
+	if err != nil {
+		t.Fatalf("resolve main head: %v", err)
+	}
+
+	state := store.RepoState{
+		Version:       1,
+		Repo:          "hack-dance/stack",
+		DefaultRemote: "origin",
+		Trunk:         "main",
+		Branches: map[string]store.BranchRecord{
+			"feature/a": {
+				ParentBranch: "main",
+				RemoteName:   "origin",
+				PR: store.PullRequest{
+					Number:          1,
+					HeadRefName:     "feature/a",
+					BaseRefName:     "main",
+					LastSeenHeadOID: head,
+					State:           "OPEN",
+				},
+				Restack: store.RestackMetadata{
+					LastParentHeadOID: mainHead,
+				},
+			},
+		},
+	}
+	if err := runtime.Store.WriteState(runtime.Context, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	ghStub := testutil.SetupGHStub(t, "hack-dance/stack", "main")
+	t.Setenv("STACK_TEST_GH_STATE", ghStub.StatePath)
+	t.Setenv("STACK_TEST_GH_LOG", ghStub.LogPath)
+	t.Setenv("PATH", ghStub.Dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	writeGHState(t, ghStub.StatePath, `{
+  "repo": {
+    "nameWithOwner": "hack-dance/stack",
+    "url": "https://github.com/hack-dance/stack",
+    "defaultBranchRef": { "name": "main" }
+  },
+  "prs": {
+    "1": {
+      "id": "PR_1",
+      "number": 1,
+      "url": "https://example.com/hack-dance/stack/pull/1",
+      "repo": "hack-dance/stack",
+      "headRefName": "feature/a",
+      "baseRefName": "main",
+      "headRefOid": "`+head+`",
+      "baseRefOid": "",
+      "state": "OPEN",
+      "isDraft": false
+    }
+  },
+  "next_number": 2
+}`)
+
+	executeCommand(t, runtime, "queue", "feature/a", "--strategy", "squash", "--yes")
+
+	log := readFile(t, ghStub.LogPath)
+	expected := "pr merge 1 --auto --squash --match-head-commit " + head
+	if !strings.Contains(log, expected) {
+		t.Fatalf("expected gh merge log %q, got %q", expected, log)
+	}
+}
+
 func executeCommand(t *testing.T, runtime *stackruntime.Runtime, args ...string) string {
 	t.Helper()
 
