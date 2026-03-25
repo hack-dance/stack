@@ -126,6 +126,22 @@ func TestRebaseContinueDoesNotRequireInteractiveEditor(t *testing.T) {
 	}
 }
 
+func TestRemoteRepoSlugParsesUserlessSCPAlias(t *testing.T) {
+	t.Parallel()
+
+	repo := setupGitRepo(t)
+	run(t, repo, "git", "remote", "add", "origin", "github-work:acme/new-repo.git")
+
+	client := stackgit.NewClient(repo)
+	slug, err := client.RemoteRepoSlug(context.Background(), "origin")
+	if err != nil {
+		t.Fatalf("remote repo slug: %v", err)
+	}
+	if slug != "acme/new-repo" {
+		t.Fatalf("expected acme/new-repo, got %q", slug)
+	}
+}
+
 func setupGitRepo(t *testing.T) string {
 	t.Helper()
 

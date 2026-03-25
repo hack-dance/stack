@@ -249,16 +249,33 @@ func parseRemoteRepoSlug(remoteURL string) string {
 		return ""
 	}
 
+	if slug, ok := parseSCPRepoSlug(trimmed); ok {
+		return slug
+	}
+
 	if parsed, err := url.Parse(trimmed); err == nil && parsed.Scheme != "" {
 		return repoSlugFromPath(parsed.Path)
 	}
 
-	scpPrefix, scpPath, found := strings.Cut(trimmed, ":")
-	if !found || !strings.Contains(scpPrefix, "@") {
-		return ""
+	return ""
+}
+
+func parseSCPRepoSlug(remote string) (string, bool) {
+	if strings.Contains(remote, "://") {
+		return "", false
 	}
 
-	return repoSlugFromPath(scpPath)
+	scpPrefix, scpPath, found := strings.Cut(remote, ":")
+	if !found || scpPrefix == "" || scpPath == "" {
+		return "", false
+	}
+
+	slug := repoSlugFromPath(scpPath)
+	if slug == "" {
+		return "", false
+	}
+
+	return slug, true
 }
 
 func repoSlugFromPath(path string) string {
