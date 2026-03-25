@@ -7,7 +7,7 @@ This repo uses conventional commits plus `release-please` and `goreleaser`.
 - Pull request titles should follow Conventional Commits.
 - Release-bearing changes should land on `main` via squash or rebase merges so the final commit subject stays conventional.
 - `release-please` watches `main`, opens a release PR, updates `CHANGELOG.md`, and bumps the version manifest.
-- Merging the release PR creates the Git tag.
+- Merging the release PR triggers `tag-release`, which creates the Git tag from the merged release commit.
 - Tag pushes trigger `goreleaser`, which builds artifacts, creates the GitHub Release, and updates `hack-dance/homebrew-tap`.
 
 ## Required secrets
@@ -23,7 +23,8 @@ This repo uses conventional commits plus `release-please` and `goreleaser`.
 2. Wait for the `release-please` workflow to open or update the release PR.
 3. Review the generated version and changelog.
 4. Merge the release PR.
-5. Verify the `release` workflow published artifacts and updated the Homebrew tap.
+5. Verify `tag-release` pushed the expected `vX.Y.Z` tag.
+6. Verify the `release` workflow published artifacts and updated the Homebrew tap.
 
 ## Local dry run
 

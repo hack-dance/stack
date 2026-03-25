@@ -3,12 +3,10 @@
   "packages": {
     ".": {
       "release-type": "go",
-      "package-name": "stack",
       "include-v-in-tag": true,
       "changelog-path": "CHANGELOG.md",
       "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true,
-      "pull-request-title-pattern": "chore: release ${version}"
+      "bump-patch-for-minor-pre-major": true
     }
   }
 }

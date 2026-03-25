@@ -1,0 +1,63 @@
+name: tag-release
+
+on:
+  pull_request_target:
+    types:
+      - closed
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to tag, without the leading v
+        required: true
+      sha:
+        description: Commit SHA to tag
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.merged == true &&
+       startsWith(github.event.pull_request.head.ref, 'release-please--'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.sha || github.event.pull_request.merge_commit_sha || github.sha }}
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [[ -n "${{ github.event.inputs.version }}" ]]; then
+            version="${{ github.event.inputs.version }}"
+          else
+            version="$(jq -r '."."' .github/.release-please-manifest.json)"
+          fi
+
+          if [[ -z "$version" || "$version" == "null" ]]; then
+            echo "could not resolve release version" >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag if missing
+        env:
+          TARGET_SHA: ${{ github.event.inputs.sha || github.event.pull_request.merge_commit_sha || github.sha }}
+        run: |
+          tag="v${{ steps.version.outputs.version }}"
+
+          git fetch --tags origin
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "tag $tag already exists"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "$tag" "$TARGET_SHA"
+          git push origin "$tag"
