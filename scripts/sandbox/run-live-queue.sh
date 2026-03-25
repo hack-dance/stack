@@ -31,9 +31,8 @@ gh repo clone "${STACK_SANDBOX_REPO}" "${clone_dir}" -- --quiet
 
 git -C "${clone_dir}" config user.email stack@example.com
 git -C "${clone_dir}" config user.name "Stack Sandbox"
-git -C "${clone_dir}" fetch origin \
-  "${STACK_SANDBOX_TRUNK}:${STACK_SANDBOX_TRUNK}" \
-  "${branch}:${branch}" >/dev/null
+git -C "${clone_dir}" fetch origin "${branch}" >/dev/null
+git -C "${clone_dir}" branch -f "${branch}" "origin/${branch}" >/dev/null
 
 (
   cd "${clone_dir}"
