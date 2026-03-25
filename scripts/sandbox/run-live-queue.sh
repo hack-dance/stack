@@ -24,7 +24,7 @@ clone_dir="${tmpdir}/repo"
 branch="sandbox-queue-ready"
 
 echo "Building stack CLI"
-go build -o "${binary}" ./cmd/stack
+stack_sandbox_go build -o "${binary}" ./cmd/stack
 
 echo "Cloning sandbox repo into ${clone_dir}"
 gh repo clone "${STACK_SANDBOX_REPO}" "${clone_dir}" -- --quiet

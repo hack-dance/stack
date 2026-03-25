@@ -33,6 +33,20 @@ stack_sandbox_require_tools() {
   }
 }
 
+stack_sandbox_go() {
+  if command -v go >/dev/null 2>&1; then
+    go "$@"
+    return
+  fi
+  if command -v mise >/dev/null 2>&1; then
+    mise exec -- go "$@"
+    return
+  fi
+
+  echo "go or mise is required" >&2
+  exit 1
+}
+
 stack_sandbox_ensure_clean_worktree() {
   git diff --quiet
   git diff --cached --quiet

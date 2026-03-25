@@ -26,7 +26,7 @@ base_branch="sandbox-conflict-base"
 child_branch="sandbox-conflict-child"
 
 echo "Building stack CLI"
-go build -o "${binary}" ./cmd/stack
+stack_sandbox_go build -o "${binary}" ./cmd/stack
 
 echo "Merging ${drift_branch} to create real trunk drift"
 drift_number="$(stack_sandbox_pr_number "${drift_branch}")"
