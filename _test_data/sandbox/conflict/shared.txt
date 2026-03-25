@@ -1,4 +1,4 @@
 conflict scenario
 owner: sandbox-trunk-drift
 resolution: trunk drift version
-marker: bd5bf7e
+marker: 398f525
