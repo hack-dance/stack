@@ -680,10 +680,7 @@ stack sync --apply
 				}
 
 				if cleanMergedParent {
-					parentHeadOID, err := runtime.Git.ResolveRef(runtime.Context, branch)
-					if err != nil {
-						parentHeadOID = ""
-					}
+					parentHeadOID := pr.LastSeenHeadOID
 					for _, child := range stack.Children(state, branch) {
 						childRecord := state.Branches[child]
 						if parentHeadOID != "" && childRecord.Restack.LastParentHeadOID == parentHeadOID {

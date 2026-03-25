@@ -217,6 +217,85 @@ func TestSyncApplySkipsAmbiguousMergedParent(t *testing.T) {
 	}
 }
 
+func TestSyncApplySkipsWhenLocalParentMovedPastMergedPRHead(t *testing.T) {
+	repo, runtime, featureAHead := setupTrackedStackRepo(t)
+	ghStub := testutil.SetupGHStub(t, "hack-dance/stack", "main")
+	t.Setenv("STACK_TEST_GH_STATE", ghStub.StatePath)
+	t.Setenv("STACK_TEST_GH_LOG", ghStub.LogPath)
+	t.Setenv("PATH", ghStub.Dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	testutil.Run(t, repo, "git", "switch", "feature/a")
+	testutil.WriteFile(t, filepath.Join(repo, "feature-a.txt"), "feature a moved locally\n")
+	testutil.Run(t, repo, "git", "add", "feature-a.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "advance feature a locally")
+
+	movedHead, err := runtime.Git.ResolveRef(runtime.Context, "feature/a")
+	if err != nil {
+		t.Fatalf("resolve moved feature/a head: %v", err)
+	}
+
+	state, err := runtime.Store.ReadState(runtime.Context)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	childRecord := state.Branches["feature/b"]
+	childRecord.Restack.LastParentHeadOID = movedHead
+	state.Branches["feature/b"] = childRecord
+	if err := runtime.Store.WriteState(runtime.Context, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	writeGHState(t, ghStub.StatePath, `{
+  "repo": {
+    "nameWithOwner": "hack-dance/stack",
+    "url": "https://github.com/hack-dance/stack",
+    "defaultBranchRef": { "name": "main" }
+  },
+  "prs": {
+    "1": {
+      "id": "PR_1",
+      "number": 1,
+      "url": "https://example.com/hack-dance/stack/pull/1",
+      "repo": "hack-dance/stack",
+      "headRefName": "feature/a",
+      "baseRefName": "main",
+      "lastSeenHeadOid": "`+featureAHead+`",
+      "lastSeenBaseOid": "",
+      "state": "MERGED",
+      "isDraft": false
+    },
+    "2": {
+      "id": "PR_2",
+      "number": 2,
+      "url": "https://example.com/hack-dance/stack/pull/2",
+      "repo": "hack-dance/stack",
+      "headRefName": "feature/b",
+      "baseRefName": "feature/a",
+      "lastSeenHeadOid": "",
+      "lastSeenBaseOid": "",
+      "state": "OPEN",
+      "isDraft": false
+    }
+  },
+  "next_number": 3
+}`)
+
+	executeCommand(t, runtime, "sync", "--apply")
+
+	state, err = runtime.Store.ReadState(runtime.Context)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if got := state.Branches["feature/b"].ParentBranch; got != "feature/a" {
+		t.Fatalf("expected feature/b parent to stay feature/a, got %q", got)
+	}
+
+	log := readFile(t, ghStub.LogPath)
+	if strings.Contains(log, "pr edit 2 --base main") {
+		t.Fatalf("expected no child PR retarget when local parent moved past merged PR head, got %q", log)
+	}
+}
+
 func TestSubmitCreatesAndTracksPR(t *testing.T) {
 	repo := testutil.SetupGitRepo(t)
 	remote := filepath.Join(t.TempDir(), "remote.git")

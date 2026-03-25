@@ -23,6 +23,18 @@ if os.path.exists(state_path):
 else:
     state = {"repo": {}, "prs": {}, "next_number": 1}
 
+def normalize_pr(pr):
+    normalized = dict(pr)
+    if "headRefOid" not in normalized and "lastSeenHeadOid" in normalized:
+        normalized["headRefOid"] = normalized.get("lastSeenHeadOid", "")
+    if "baseRefOid" not in normalized and "lastSeenBaseOid" in normalized:
+        normalized["baseRefOid"] = normalized.get("lastSeenBaseOid", "")
+    if "lastSeenHeadOid" not in normalized and "headRefOid" in normalized:
+        normalized["lastSeenHeadOid"] = normalized.get("headRefOid", "")
+    if "lastSeenBaseOid" not in normalized and "baseRefOid" in normalized:
+        normalized["lastSeenBaseOid"] = normalized.get("baseRefOid", "")
+    return normalized
+
 def save():
     with open(state_path, "w", encoding="utf-8") as handle:
         json.dump(state, handle)
@@ -43,7 +55,7 @@ if args[:2] == ["pr", "list"]:
     result = []
     for pr in state.get("prs", {}).values():
         if pr.get("headRefName") == head:
-            result.append(pr)
+            result.append(normalize_pr(pr))
     print(json.dumps(result))
     sys.exit(0)
 
@@ -53,7 +65,7 @@ if args[:2] == ["pr", "view"]:
     if pr is None:
         print(f"unknown pr {number}", file=sys.stderr)
         sys.exit(1)
-    print(json.dumps(pr))
+    print(json.dumps(normalize_pr(pr)))
     sys.exit(0)
 
 if args[:2] == ["pr", "create"]:
@@ -71,13 +83,14 @@ if args[:2] == ["pr", "create"]:
         "repo": repo_name,
         "headRefName": head,
         "baseRefName": base,
-        "lastSeenHeadOid": "",
-        "lastSeenBaseOid": "",
+        "headRefOid": "",
+        "baseRefOid": "",
         "state": "OPEN",
         "isDraft": draft,
         "title": title,
         "body": body,
     }
+    pr = normalize_pr(pr)
     state.setdefault("prs", {})[str(number)] = pr
     state["next_number"] = number + 1
     save()

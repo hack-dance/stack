@@ -20,28 +20,12 @@ cleanup() {
 trap cleanup EXIT
 
 binary="${tmpdir}/stack"
-clone_dir="${tmpdir}/repo"
 base_branch="sandbox-clean-base"
 child_branch="sandbox-clean-child"
 grandchild_branch="sandbox-clean-grandchild"
 
 echo "Building stack CLI"
 stack_sandbox_go build -o "${binary}" ./cmd/stack
-
-echo "Cloning sandbox repo into ${clone_dir}"
-gh repo clone "${STACK_SANDBOX_REPO}" "${clone_dir}" -- --quiet
-
-git -C "${clone_dir}" config user.email stack@example.com
-git -C "${clone_dir}" config user.name "Stack Sandbox"
-git -C "${clone_dir}" fetch origin \
-  "${base_branch}" \
-  "${child_branch}" \
-  "${grandchild_branch}" >/dev/null
-git -C "${clone_dir}" branch -f "${base_branch}" "origin/${base_branch}" >/dev/null
-git -C "${clone_dir}" branch -f "${child_branch}" "origin/${child_branch}" >/dev/null
-git -C "${clone_dir}" branch -f "${grandchild_branch}" "origin/${grandchild_branch}" >/dev/null
-
-state_file="${clone_dir}/.git/stack/state.json"
 
 merge_pr_by_head() {
   local branch="$1"
@@ -72,9 +56,36 @@ expect_pr_base() {
   fi
 }
 
+setup_clone() {
+  local clone_dir="$1"
+
+  echo "Cloning sandbox repo into ${clone_dir}"
+  gh repo clone "${STACK_SANDBOX_REPO}" "${clone_dir}" -- --quiet
+
+  git -C "${clone_dir}" config user.email stack@example.com
+  git -C "${clone_dir}" config user.name "Stack Sandbox"
+  git -C "${clone_dir}" fetch origin \
+    "${base_branch}" \
+    "${child_branch}" \
+    "${grandchild_branch}" >/dev/null
+  git -C "${clone_dir}" branch -f "${base_branch}" "origin/${base_branch}" >/dev/null
+  git -C "${clone_dir}" branch -f "${child_branch}" "origin/${child_branch}" >/dev/null
+  git -C "${clone_dir}" branch -f "${grandchild_branch}" "origin/${grandchild_branch}" >/dev/null
+
+  (
+    cd "${clone_dir}"
+    "${binary}" init --trunk "${STACK_SANDBOX_TRUNK}" --remote origin
+    "${binary}" track "${base_branch}" --parent "${STACK_SANDBOX_TRUNK}"
+    "${binary}" track "${child_branch}" --parent "${base_branch}"
+    "${binary}" track "${grandchild_branch}" --parent "${child_branch}"
+    "${binary}" submit --all --yes --no-restack
+  )
+}
+
 expect_state_parent() {
-  local branch="$1"
-  local expected_parent="$2"
+  local state_file="$1"
+  local branch="$2"
+  local expected_parent="$3"
   python3 - "$state_file" "$branch" "$expected_parent" <<'PY'
 import json
 import sys
@@ -89,6 +100,7 @@ PY
 }
 
 set_grandchild_anchor_to_main_head() {
+  local state_file="$1"
   python3 - "$state_file" "$grandchild_branch" <<'PY'
 import json
 import subprocess
@@ -107,39 +119,67 @@ with open(state_path, "w", encoding="utf-8") as handle:
 PY
 }
 
-(
-  cd "${clone_dir}"
-  "${binary}" init --trunk "${STACK_SANDBOX_TRUNK}" --remote origin
-  "${binary}" track "${base_branch}" --parent "${STACK_SANDBOX_TRUNK}"
-  "${binary}" track "${child_branch}" --parent "${base_branch}"
-  "${binary}" track "${grandchild_branch}" --parent "${child_branch}"
-  "${binary}" submit --all --yes --no-restack
-)
+clean_clone="${tmpdir}/clean-sync"
+setup_clone "${clean_clone}"
+clean_state_file="${clean_clone}/.git/stack/state.json"
 
 echo "Merging ${base_branch} to trigger clean merged-parent advancement"
 merge_pr_by_head "${base_branch}"
 
-(
-  cd "${clone_dir}"
-  sync_output="$("${binary}" sync --apply)"
-  printf "%s\n" "${sync_output}"
-)
+clean_output="$(
+  cd "${clean_clone}" && "${binary}" sync --apply
+)"
+printf "%s\n" "${clean_output}"
 
-expect_state_parent "${child_branch}" "${STACK_SANDBOX_TRUNK}"
+expect_state_parent "${clean_state_file}" "${child_branch}" "${STACK_SANDBOX_TRUNK}"
 expect_pr_base "${child_branch}" "${STACK_SANDBOX_TRUNK}"
-expect_state_parent "${grandchild_branch}" "${child_branch}"
 
-echo "Corrupting grandchild anchor to force manual review after the child merge"
+echo "Merging ${child_branch} to verify clean two-hop advancement"
+merge_pr_by_head "${child_branch}"
+
+second_clean_output="$(
+  cd "${clean_clone}" && "${binary}" sync --apply
+)"
+printf "%s\n" "${second_clean_output}"
+
+if [[ "${second_clean_output}" == *"manual review before reparenting"* ]]; then
+  echo "Expected clean grandchild advancement, got manual review output." >&2
+  exit 1
+fi
+
+expect_state_parent "${clean_state_file}" "${grandchild_branch}" "${STACK_SANDBOX_TRUNK}"
+expect_pr_base "${grandchild_branch}" "${STACK_SANDBOX_TRUNK}"
+
+echo
+echo "Reseeding sandbox fixtures before the ambiguous sync scenario"
+"${SCRIPT_DIR}/seed-fixtures.sh" >/dev/null
+
+ambiguous_clone="${tmpdir}/ambiguous-sync"
+setup_clone "${ambiguous_clone}"
+ambiguous_state_file="${ambiguous_clone}/.git/stack/state.json"
+
+echo "Merging ${base_branch} again for ambiguous merged-parent handling"
+merge_pr_by_head "${base_branch}"
+
+ambiguous_clean_output="$(
+  cd "${ambiguous_clone}" && "${binary}" sync --apply
+)"
+printf "%s\n" "${ambiguous_clean_output}"
+
+expect_state_parent "${ambiguous_state_file}" "${child_branch}" "${STACK_SANDBOX_TRUNK}"
+expect_pr_base "${child_branch}" "${STACK_SANDBOX_TRUNK}"
+
+echo "Corrupting the grandchild anchor to force manual review"
 (
-  cd "${clone_dir}"
-  set_grandchild_anchor_to_main_head
+  cd "${ambiguous_clone}"
+  set_grandchild_anchor_to_main_head "${ambiguous_state_file}"
 )
 
-echo "Merging ${child_branch} to trigger ambiguous merged-parent handling"
+echo "Merging ${child_branch} to verify ambiguous merged-parent handling"
 merge_pr_by_head "${child_branch}"
 
 ambiguous_output="$(
-  cd "${clone_dir}" && "${binary}" sync --apply
+  cd "${ambiguous_clone}" && "${binary}" sync --apply
 )"
 printf "%s\n" "${ambiguous_output}"
 
@@ -148,13 +188,13 @@ if [[ "${ambiguous_output}" != *"manual review before reparenting"* ]]; then
   exit 1
 fi
 
-expect_state_parent "${grandchild_branch}" "${child_branch}"
+expect_state_parent "${ambiguous_state_file}" "${grandchild_branch}" "${child_branch}"
 expect_pr_base "${grandchild_branch}" "${child_branch}"
 
 echo
-echo "Sync scenario status after live verification:"
+echo "Ambiguous sync scenario status after live verification:"
 (
-  cd "${clone_dir}"
+  cd "${ambiguous_clone}"
   "${binary}" status --json
 )
 
