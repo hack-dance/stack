@@ -320,40 +320,47 @@ EOF
   esac
 }
 
-stack_sandbox_trunk_marker() {
-  git rev-parse --short "${STACK_SANDBOX_REMOTE}/${STACK_SANDBOX_TRUNK}" 2>/dev/null || git rev-parse --short "${STACK_SANDBOX_TRUNK}"
+stack_sandbox_branch_marker() {
+  local branch="$1"
+  local base_ref
+  base_ref="$(stack_sandbox_branch_git_base "${branch}")"
+  git rev-parse --short "${base_ref}"
 }
 
 stack_sandbox_render_branch() {
   local branch="$1"
-  local trunk_marker=""
+  local branch_marker=""
 
   mkdir -p "_test_data/sandbox"
+  branch_marker="$(stack_sandbox_branch_marker "${branch}")"
   case "${branch}" in
     sandbox-clean-base)
       mkdir -p "_test_data/sandbox/clean"
-      cat > "_test_data/sandbox/clean/base.txt" <<'EOF'
+      cat > "_test_data/sandbox/clean/base.txt" <<EOF
 clean stack: base branch
 purpose: baseline parent PR
+marker: ${branch_marker}
 EOF
       ;;
     sandbox-clean-child)
       mkdir -p "_test_data/sandbox/clean"
-      cat > "_test_data/sandbox/clean/child.txt" <<'EOF'
+      cat > "_test_data/sandbox/clean/child.txt" <<EOF
 clean stack: child branch
 purpose: child PR on top of sandbox-clean-base
+marker: ${branch_marker}
 EOF
       ;;
     sandbox-clean-grandchild)
       mkdir -p "_test_data/sandbox/clean"
-      cat > "_test_data/sandbox/clean/grandchild.txt" <<'EOF'
+      cat > "_test_data/sandbox/clean/grandchild.txt" <<EOF
 clean stack: grandchild branch
 purpose: grandchild PR on top of sandbox-clean-child
+marker: ${branch_marker}
 EOF
       ;;
     sandbox-overlap-base)
       mkdir -p "_test_data/sandbox/overlap"
-      cat > "_test_data/sandbox/overlap/shared.md" <<'EOF'
+      cat > "_test_data/sandbox/overlap/shared.md" <<EOF
 # Same-File Overlap
 
 ## Section A
@@ -363,11 +370,13 @@ Parent branch owns this section and introduces the file.
 ## Section B
 
 This section will be edited by the child branch.
+
+Marker: ${branch_marker}
 EOF
       ;;
     sandbox-overlap-child)
       mkdir -p "_test_data/sandbox/overlap"
-      cat > "_test_data/sandbox/overlap/shared.md" <<'EOF'
+      cat > "_test_data/sandbox/overlap/shared.md" <<EOF
 # Same-File Overlap
 
 ## Section A
@@ -377,41 +386,43 @@ Parent branch owns this section and introduces the file.
 ## Section B
 
 Child branch rewrites this section to create same-file stacked diffs without a guaranteed merge conflict.
+
+Marker: ${branch_marker}
 EOF
       ;;
     sandbox-conflict-base)
       mkdir -p "_test_data/sandbox/conflict"
-      cat > "_test_data/sandbox/conflict/shared.txt" <<'EOF'
+      cat > "_test_data/sandbox/conflict/shared.txt" <<EOF
 conflict scenario
 owner: sandbox-conflict-base
 resolution: parent branch version
+marker: ${branch_marker}
 EOF
       ;;
     sandbox-conflict-child)
       mkdir -p "_test_data/sandbox/conflict"
-      cat > "_test_data/sandbox/conflict/shared.txt" <<'EOF'
+      cat > "_test_data/sandbox/conflict/shared.txt" <<EOF
 conflict scenario
 owner: sandbox-conflict-child
 resolution: child branch version
+marker: ${branch_marker}
 EOF
       ;;
     sandbox-trunk-drift)
-      trunk_marker="$(stack_sandbox_trunk_marker)"
       mkdir -p "_test_data/sandbox/conflict"
       cat > "_test_data/sandbox/conflict/shared.txt" <<'EOF'
 conflict scenario
 owner: sandbox-trunk-drift
 resolution: trunk drift version
 EOF
-      printf "marker: %s\n" "${trunk_marker}" >> "_test_data/sandbox/conflict/shared.txt"
+      printf "marker: %s\n" "${branch_marker}" >> "_test_data/sandbox/conflict/shared.txt"
       ;;
     sandbox-queue-ready)
-      trunk_marker="$(stack_sandbox_trunk_marker)"
       mkdir -p "_test_data/sandbox/queue"
       cat > "_test_data/sandbox/queue/ready.txt" <<EOF
 queue-ready fixture
 purpose: isolated bottom PR for merge queue and auto-merge checks
-marker: ${trunk_marker}
+marker: ${branch_marker}
 EOF
       ;;
     *)
