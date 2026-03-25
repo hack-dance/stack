@@ -84,6 +84,15 @@ STACK_GITHUB_SANDBOX_PR_NUMBER=<pr-number> \
 mise exec -- go test ./internal/github -run TestSandboxViewExistingPR -v
 ```
 
+Run the destructive end-to-end scenarios in a temp clone:
+
+```bash
+scripts/sandbox/run-live-queue.sh
+scripts/sandbox/run-live-conflict.sh
+```
+
+These scripts intentionally mutate the live sandbox repo, then reseed the consumed fixtures so the next run starts from a known state.
+
 Optional environment:
 
 - `STACK_GITHUB_SANDBOX_REPO_ROOT`
@@ -98,3 +107,24 @@ The normal suite now exercises most risky local behaviors and GitHub command wir
 - end-to-end submit/sync/queue flows against the live `hack-dance/stack` sandbox
 
 Those still need deliberate sandbox runs before calling V1 feature complete.
+
+## Strongest Current Loop
+
+For work that changes queue, restack, submit, or crash-recovery behavior, use this loop:
+
+```bash
+mise exec -- go test ./...
+mise exec -- go build ./...
+scripts/sandbox/seed-fixtures.sh
+scripts/sandbox/run-live-queue.sh
+scripts/sandbox/run-live-conflict.sh
+scripts/sandbox/report-fixtures.sh
+```
+
+That combination gives:
+
+- local unit and fixture coverage
+- real `gh` mutation coverage against GitHub
+- a real queue or auto-merge handoff
+- a real interrupted restack with journaled recovery and resume
+- deterministic fixture reseeding for the next pass

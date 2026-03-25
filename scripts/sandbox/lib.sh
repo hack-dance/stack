@@ -77,7 +77,27 @@ stack_sandbox_pr_number() {
   gh pr list \
     --repo "${STACK_SANDBOX_REPO}" \
     --head "${branch}" \
-    --state all \
+    --state open \
+    --json number \
+    --jq '.[0].number // empty'
+}
+
+stack_sandbox_reopenable_pr_number() {
+  local branch="$1"
+  gh pr list \
+    --repo "${STACK_SANDBOX_REPO}" \
+    --head "${branch}" \
+    --state closed \
+    --json number \
+    --jq '.[0].number // empty'
+}
+
+stack_sandbox_merged_pr_number() {
+  local branch="$1"
+  gh pr list \
+    --repo "${STACK_SANDBOX_REPO}" \
+    --head "${branch}" \
+    --state merged \
     --json number \
     --jq '.[0].number // empty'
 }
@@ -100,6 +120,10 @@ stack_sandbox_upsert_pr() {
   local number
   number="$(stack_sandbox_pr_number "${branch}")"
   if [[ -z "${number}" ]]; then
+    number="$(stack_sandbox_reopenable_pr_number "${branch}")"
+  fi
+
+  if [[ -z "${number}" ]]; then
     gh pr create \
       --repo "${STACK_SANDBOX_REPO}" \
       --base "${pr_base}" \
@@ -111,10 +135,6 @@ stack_sandbox_upsert_pr() {
 
   local state
   state="$(stack_sandbox_pr_state "${number}")"
-  if [[ "${state}" == "MERGED" ]]; then
-    echo "Refusing to reuse merged PR #${number} for ${branch}. Run cleanup or pick a new branch name." >&2
-    exit 1
-  fi
   if [[ "${state}" == "CLOSED" ]]; then
     gh pr reopen --repo "${STACK_SANDBOX_REPO}" "${number}" >/dev/null
   fi
@@ -416,6 +436,22 @@ stack_sandbox_report_branch() {
       "${number}" \
       --json number,title,headRefName,baseRefName,state,isDraft,url
   else
-    printf '{"headRefName":"%s","state":"MISSING","url":"","number":0,"title":"","baseRefName":""}\n' "${branch}"
+    number="$(stack_sandbox_reopenable_pr_number "${branch}")"
+    if [[ -n "${number}" ]]; then
+      gh pr view \
+        --repo "${STACK_SANDBOX_REPO}" \
+        "${number}" \
+        --json number,title,headRefName,baseRefName,state,isDraft,url
+    else
+      number="$(stack_sandbox_merged_pr_number "${branch}")"
+      if [[ -n "${number}" ]]; then
+        gh pr view \
+          --repo "${STACK_SANDBOX_REPO}" \
+          "${number}" \
+          --json number,title,headRefName,baseRefName,state,isDraft,url
+      else
+        printf '{"headRefName":"%s","state":"MISSING","url":"","number":0,"title":"","baseRefName":""}\n' "${branch}"
+      fi
+    fi
   fi
 }
