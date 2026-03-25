@@ -50,6 +50,27 @@ mise exec -- go build -o "$tmpdir/stack" ./cmd/stack
 
 These are opt-in and non-destructive by default.
 
+### Seed Real Sandbox PR Fixtures
+
+Create or refresh the deterministic sandbox PR set in `hack-dance/stack`:
+
+```bash
+scripts/sandbox/seed-fixtures.sh
+scripts/sandbox/report-fixtures.sh
+```
+
+Advance only the trunk-drift branch when you want to trigger a real rebase conflict later:
+
+```bash
+scripts/sandbox/advance-conflict.sh
+```
+
+Clean everything back up:
+
+```bash
+scripts/sandbox/cleanup-fixtures.sh
+```
+
 Verify the live sandbox repo:
 
 ```bash
