@@ -47,6 +47,7 @@ jobs:
 
       - name: Create tag if missing
         env:
+          PUSH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
           TARGET_SHA: ${{ github.event.inputs.sha || github.event.pull_request.merge_commit_sha || github.sha }}
         run: |
           tag="v${{ steps.version.outputs.version }}"
@@ -59,5 +60,6 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${PUSH_TOKEN}@github.com/${{ github.repository }}.git"
           git tag "$tag" "$TARGET_SHA"
           git push origin "$tag"
