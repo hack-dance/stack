@@ -1,6 +1,7 @@
 .DS_Store
 dist/
 bin/
+stack
 coverage.out
 *.test
 *.out
