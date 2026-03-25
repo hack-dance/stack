@@ -1,11 +1,14 @@
 # Releasing
 
-This repo uses conventional commits plus `release-please` and `goreleaser`.
+This repo uses conventional commits on `main` plus `release-please` and
+`goreleaser`.
 
 ## Release model
 
-- Pull request titles should follow Conventional Commits.
-- Release-bearing changes should land on `main` via squash or rebase merges so the final commit subject stays conventional.
+- Release-bearing changes should land on `main` with conventional commit
+  subjects.
+- Prefer squash or rebase merges for release-bearing PRs so `main` keeps
+  parseable release commits.
 - `release-please` watches `main`, opens a release PR, updates `CHANGELOG.md`, and bumps the version manifest.
 - Merging the release PR triggers `tag-release`, which creates the Git tag from the merged release commit.
 - Tag pushes trigger `goreleaser`, which builds artifacts, creates the GitHub Release, and updates `hack-dance/homebrew-tap`.
