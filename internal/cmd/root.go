@@ -435,6 +435,9 @@ stack move feature/b --parent main --yes
 			if err := ensureStateWritable(state); err != nil {
 				return err
 			}
+			if err := ensureNoPendingOperation(runtime); err != nil {
+				return err
+			}
 
 			branch := args[0]
 			record, ok := state.Branches[branch]
@@ -448,9 +451,11 @@ stack move feature/b --parent main --yes
 				return err
 			}
 
-			_, _ = fmt.Fprintln(cmd.OutOrStdout(), ui.RenderPreview("Move preview", []string{
-				fmt.Sprintf("%s: %s -> %s", branch, record.ParentBranch, parent),
-			}))
+			preview := []string{fmt.Sprintf("%s: %s -> %s", branch, record.ParentBranch, parent)}
+			for _, descendant := range collectSubtree(state, branch)[1:] {
+				preview = append(preview, fmt.Sprintf("%s: restack on top of rewritten %s", descendant, state.Branches[descendant].ParentBranch))
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), ui.RenderPreview("Move preview", preview))
 
 			if !yes {
 				confirmed, err := forms.Confirm("Move branch", "This updates stack metadata and may rewrite descendant history.")
@@ -472,11 +477,19 @@ stack move feature/b --parent main --yes
 				return err
 			}
 
-			return runRestackPlan(runtime, state, []store.RestackStep{{
-				Branch:             branch,
-				Parent:             parent,
-				PreviousParentHead: previousParentHead,
-			}}, nil)
+			steps, err := restackStepsForTargets(runtime, state, []string{branch})
+			if err != nil {
+				return err
+			}
+			if len(steps) == 0 {
+				steps = []store.RestackStep{{
+					Branch:             branch,
+					Parent:             parent,
+					PreviousParentHead: previousParentHead,
+					PreviousBranchHead: resolveOID(runtime, branch),
+				}}
+			}
+			return runRestackPlan(runtime, state, steps, nil)
 		},
 	}
 
@@ -937,7 +950,8 @@ func restackSteps(runtime *stackruntime.Runtime, state store.RepoState, args []s
 
 func restackStepsForTargets(runtime *stackruntime.Runtime, state store.RepoState, targets []string) ([]store.RestackStep, error) {
 	seen := map[string]bool{}
-	steps := make([]store.RestackStep, 0)
+	subtreeOrder := make([]string, 0)
+	snapshotHeads := map[string]string{}
 
 	for _, target := range targets {
 		for _, branch := range collectSubtree(state, target) {
@@ -945,34 +959,61 @@ func restackStepsForTargets(runtime *stackruntime.Runtime, state store.RepoState
 				continue
 			}
 			seen[branch] = true
-			record := state.Branches[branch]
-			if record.Restack.LastParentHeadOID == "" {
-				return nil, fmt.Errorf("branch %q has no recorded restack anchor; use `stack track` or repair metadata first", branch)
-			}
-
-			validAnchor, err := runtime.Git.IsAncestor(runtime.Context, record.Restack.LastParentHeadOID, branch)
-			if err != nil {
-				return nil, err
-			}
-			if !validAnchor {
-				return nil, fmt.Errorf("branch %q has an invalid restack anchor; refusing to guess a merge-base fallback", branch)
-			}
-
-			parentOID, err := runtime.Git.ResolveRef(runtime.Context, record.ParentBranch)
-			if err != nil {
-				return nil, err
-			}
-			if parentOID == record.Restack.LastParentHeadOID {
-				continue
-			}
-
-			steps = append(steps, store.RestackStep{
-				Branch:             branch,
-				Parent:             record.ParentBranch,
-				PreviousParentHead: record.Restack.LastParentHeadOID,
-				PreviousBranchHead: resolveOID(runtime, branch),
-			})
+			subtreeOrder = append(subtreeOrder, branch)
 		}
+	}
+
+	for _, branch := range subtreeOrder {
+		headOID, err := runtime.Git.ResolveRef(runtime.Context, branch)
+		if err != nil {
+			return nil, err
+		}
+		snapshotHeads[branch] = headOID
+	}
+
+	rewritten := map[string]bool{}
+	steps := make([]store.RestackStep, 0, len(subtreeOrder))
+
+	for _, branch := range subtreeOrder {
+		record := state.Branches[branch]
+		if record.Restack.LastParentHeadOID == "" {
+			return nil, fmt.Errorf("branch %q has no recorded restack anchor; use `stack track` or repair metadata first", branch)
+		}
+
+		previousParentHead := record.Restack.LastParentHeadOID
+		parentWillRewrite := rewritten[record.ParentBranch]
+		if parentWillRewrite {
+			snapshotHead, ok := snapshotHeads[record.ParentBranch]
+			if !ok || snapshotHead == "" {
+				return nil, fmt.Errorf("branch %q cannot restack because parent %q has no recorded local head", branch, record.ParentBranch)
+			}
+			previousParentHead = snapshotHead
+		}
+
+		validAnchor, err := runtime.Git.IsAncestor(runtime.Context, previousParentHead, branch)
+		if err != nil {
+			return nil, err
+		}
+		if !validAnchor {
+			return nil, fmt.Errorf("branch %q has an invalid restack anchor; refusing to guess a merge-base fallback", branch)
+		}
+
+		parentOID, err := runtime.Git.ResolveRef(runtime.Context, record.ParentBranch)
+		if err != nil {
+			return nil, err
+		}
+
+		if parentOID == record.Restack.LastParentHeadOID && !parentWillRewrite {
+			continue
+		}
+
+		steps = append(steps, store.RestackStep{
+			Branch:             branch,
+			Parent:             record.ParentBranch,
+			PreviousParentHead: previousParentHead,
+			PreviousBranchHead: resolveOID(runtime, branch),
+		})
+		rewritten[branch] = true
 	}
 
 	return steps, nil

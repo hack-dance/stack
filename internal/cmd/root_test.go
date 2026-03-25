@@ -70,6 +70,100 @@ func TestRestackStepsRejectInvalidAnchor(t *testing.T) {
 	}
 }
 
+func TestRestackStepsIncludeDescendantsWhenAncestorMoves(t *testing.T) {
+	repo := testutil.SetupGitRepo(t)
+	runtime := newTestRuntime(repo)
+
+	mainHead, err := runtime.Git.ResolveRef(runtime.Context, "main")
+	if err != nil {
+		t.Fatalf("resolve main head: %v", err)
+	}
+
+	testutil.Run(t, repo, "git", "switch", "-c", "feature/base")
+	testutil.WriteFile(t, filepath.Join(repo, "feature-base.txt"), "feature base\n")
+	testutil.Run(t, repo, "git", "add", "feature-base.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "add feature base")
+	featureBaseHead, err := runtime.Git.ResolveRef(runtime.Context, "feature/base")
+	if err != nil {
+		t.Fatalf("resolve feature/base head: %v", err)
+	}
+
+	testutil.Run(t, repo, "git", "switch", "main")
+	testutil.Run(t, repo, "git", "switch", "-c", "feature/a")
+	testutil.WriteFile(t, filepath.Join(repo, "feature-a.txt"), "feature a\n")
+	testutil.Run(t, repo, "git", "add", "feature-a.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "add feature a")
+	featureAHead, err := runtime.Git.ResolveRef(runtime.Context, "feature/a")
+	if err != nil {
+		t.Fatalf("resolve feature/a head: %v", err)
+	}
+
+	testutil.Run(t, repo, "git", "switch", "-c", "feature/b")
+	testutil.WriteFile(t, filepath.Join(repo, "feature-b.txt"), "feature b\n")
+	testutil.Run(t, repo, "git", "add", "feature-b.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "add feature b")
+	featureBHead, err := runtime.Git.ResolveRef(runtime.Context, "feature/b")
+	if err != nil {
+		t.Fatalf("resolve feature/b head: %v", err)
+	}
+
+	state := store.RepoState{
+		Version:       1,
+		Repo:          "hack-dance/stack",
+		DefaultRemote: "origin",
+		Trunk:         "main",
+		Branches: map[string]store.BranchRecord{
+			"feature/base": {
+				ParentBranch: "main",
+				Restack: store.RestackMetadata{
+					LastParentHeadOID: mainHead,
+				},
+			},
+			"feature/a": {
+				ParentBranch: "feature/base",
+				Restack: store.RestackMetadata{
+					LastParentHeadOID: mainHead,
+				},
+			},
+			"feature/b": {
+				ParentBranch: "feature/a",
+				Restack: store.RestackMetadata{
+					LastParentHeadOID: featureAHead,
+				},
+			},
+		},
+	}
+
+	steps, err := restackStepsForTargets(runtime, state, []string{"feature/a"})
+	if err != nil {
+		t.Fatalf("restack steps: %v", err)
+	}
+	if len(steps) != 2 {
+		t.Fatalf("expected 2 restack steps, got %d", len(steps))
+	}
+	if steps[0].Branch != "feature/a" || steps[0].Parent != "feature/base" {
+		t.Fatalf("unexpected first step: %+v", steps[0])
+	}
+	if steps[0].PreviousParentHead != mainHead {
+		t.Fatalf("expected feature/a previous parent head %q, got %q", mainHead, steps[0].PreviousParentHead)
+	}
+	if steps[0].PreviousBranchHead != featureAHead {
+		t.Fatalf("expected feature/a previous branch head %q, got %q", featureAHead, steps[0].PreviousBranchHead)
+	}
+	if featureBaseHead == featureAHead {
+		t.Fatalf("expected feature/base head to differ from feature/a head")
+	}
+	if steps[1].Branch != "feature/b" || steps[1].Parent != "feature/a" {
+		t.Fatalf("unexpected second step: %+v", steps[1])
+	}
+	if steps[1].PreviousParentHead != featureAHead {
+		t.Fatalf("expected feature/b previous parent head %q, got %q", featureAHead, steps[1].PreviousParentHead)
+	}
+	if steps[1].PreviousBranchHead != featureBHead {
+		t.Fatalf("expected feature/b previous branch head %q, got %q", featureBHead, steps[1].PreviousBranchHead)
+	}
+}
+
 func TestSyncApplyReparentsCleanMergedParent(t *testing.T) {
 	repo, runtime, featureAHead := setupTrackedStackRepo(t)
 	ghStub := testutil.SetupGHStub(t, "hack-dance/stack", "main")
@@ -131,6 +225,110 @@ func TestSyncApplyReparentsCleanMergedParent(t *testing.T) {
 	}
 
 	_ = repo
+}
+
+func TestMoveRestacksDescendantSubtree(t *testing.T) {
+	repo := testutil.SetupGitRepo(t)
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	testutil.Run(t, repo, "git", "init", "--bare", remote)
+	testutil.Run(t, repo, "git", "remote", "add", "origin", remote)
+	testutil.Run(t, repo, "git", "push", "-u", "origin", "main")
+
+	testutil.Run(t, repo, "git", "switch", "-c", "feature/base")
+	testutil.WriteFile(t, filepath.Join(repo, "feature-base.txt"), "feature base\n")
+	testutil.Run(t, repo, "git", "add", "feature-base.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "add feature base")
+	testutil.Run(t, repo, "git", "push", "-u", "origin", "feature/base")
+	featureBaseHead := strings.TrimSpace(testutil.Run(t, repo, "git", "rev-parse", "feature/base"))
+
+	testutil.Run(t, repo, "git", "switch", "main")
+	testutil.Run(t, repo, "git", "switch", "-c", "feature/a")
+	testutil.WriteFile(t, filepath.Join(repo, "feature-a.txt"), "feature a\n")
+	testutil.Run(t, repo, "git", "add", "feature-a.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "add feature a")
+	testutil.Run(t, repo, "git", "push", "-u", "origin", "feature/a")
+	oldFeatureAHead := strings.TrimSpace(testutil.Run(t, repo, "git", "rev-parse", "feature/a"))
+
+	testutil.Run(t, repo, "git", "switch", "-c", "feature/b")
+	testutil.WriteFile(t, filepath.Join(repo, "feature-b.txt"), "feature b\n")
+	testutil.Run(t, repo, "git", "add", "feature-b.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "add feature b")
+	testutil.Run(t, repo, "git", "push", "-u", "origin", "feature/b")
+	oldFeatureBHead := strings.TrimSpace(testutil.Run(t, repo, "git", "rev-parse", "feature/b"))
+
+	runtime := newTestRuntime(repo)
+	mainHead, err := runtime.Git.ResolveRef(runtime.Context, "main")
+	if err != nil {
+		t.Fatalf("resolve main head: %v", err)
+	}
+	state := store.RepoState{
+		Version:       1,
+		Repo:          "hack-dance/stack",
+		DefaultRemote: "origin",
+		Trunk:         "main",
+		Branches: map[string]store.BranchRecord{
+			"feature/base": {
+				ParentBranch: "main",
+				RemoteName:   "origin",
+				Restack: store.RestackMetadata{
+					LastParentHeadOID: mainHead,
+				},
+			},
+			"feature/a": {
+				ParentBranch: "main",
+				RemoteName:   "origin",
+				Restack: store.RestackMetadata{
+					LastParentHeadOID: mainHead,
+				},
+			},
+			"feature/b": {
+				ParentBranch: "feature/a",
+				RemoteName:   "origin",
+				Restack: store.RestackMetadata{
+					LastParentHeadOID: oldFeatureAHead,
+				},
+			},
+		},
+	}
+	if err := runtime.Store.WriteState(runtime.Context, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	output := executeCommand(t, runtime, "move", "feature/a", "--parent", "feature/base", "--yes")
+	if !strings.Contains(output, "feature/b: restack on top of rewritten feature/a") {
+		t.Fatalf("expected descendant preview, got %q", output)
+	}
+
+	state, err = runtime.Store.ReadState(runtime.Context)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if got := state.Branches["feature/a"].ParentBranch; got != "feature/base" {
+		t.Fatalf("expected feature/a parent to be feature/base, got %q", got)
+	}
+	if got := state.Branches["feature/b"].ParentBranch; got != "feature/a" {
+		t.Fatalf("expected feature/b parent to stay feature/a, got %q", got)
+	}
+
+	newFeatureAHead := strings.TrimSpace(testutil.Run(t, repo, "git", "rev-parse", "feature/a"))
+	newFeatureBHead := strings.TrimSpace(testutil.Run(t, repo, "git", "rev-parse", "feature/b"))
+	if featureBaseHead == newFeatureAHead {
+		t.Fatalf("expected moved feature/a head to remain distinct from feature/base head")
+	}
+	if newFeatureAHead == oldFeatureAHead {
+		t.Fatalf("expected feature/a head to change after move")
+	}
+	if newFeatureBHead == oldFeatureBHead {
+		t.Fatalf("expected feature/b head to change after move")
+	}
+	if got := state.Branches["feature/b"].Restack.LastParentHeadOID; got != newFeatureAHead {
+		t.Fatalf("expected feature/b restack parent head %q, got %q", newFeatureAHead, got)
+	}
+
+	mergeBase := strings.TrimSpace(testutil.Run(t, repo, "git", "merge-base", "feature/a", "feature/b"))
+	if mergeBase != newFeatureAHead {
+		t.Fatalf("expected feature/b to be restacked onto new feature/a head %q, got merge-base %q", newFeatureAHead, mergeBase)
+	}
 }
 
 func TestSyncApplySkipsAmbiguousMergedParent(t *testing.T) {
