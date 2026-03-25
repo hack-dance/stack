@@ -11,7 +11,7 @@ jobs:
     strategy:
       matrix:
         os:
-          - ubuntu-latest
+          - blacksmith-4vcpu-ubuntu-2404
           - macos-latest
     runs-on: ${{ matrix.os }}
     steps:
