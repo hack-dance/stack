@@ -99,6 +99,8 @@ stack init --trunk main --remote origin
 				if trunk == "" {
 					trunk = repoView.DefaultBranchRef.Name
 				}
+			} else {
+				repo, _ = runtime.Git.RemoteRepoSlug(runtime.Context, chooseString(remote, "origin"))
 			}
 
 			if trunk == "" {
