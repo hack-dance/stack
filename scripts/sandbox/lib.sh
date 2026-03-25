@@ -101,9 +101,9 @@ stack_sandbox_reopenable_pr_number() {
   gh pr list \
     --repo "${STACK_SANDBOX_REPO}" \
     --head "${branch}" \
-    --state closed \
-    --json number \
-    --jq '.[0].number // empty'
+    --state all \
+    --json number,state \
+    --jq '[.[] | select(.state == "CLOSED")][0].number // empty'
 }
 
 stack_sandbox_merged_pr_number() {
@@ -111,9 +111,9 @@ stack_sandbox_merged_pr_number() {
   gh pr list \
     --repo "${STACK_SANDBOX_REPO}" \
     --head "${branch}" \
-    --state merged \
-    --json number \
-    --jq '.[0].number // empty'
+    --state all \
+    --json number,state \
+    --jq '[.[] | select(.state == "MERGED")][0].number // empty'
 }
 
 stack_sandbox_pr_state() {
@@ -320,8 +320,13 @@ EOF
   esac
 }
 
+stack_sandbox_trunk_marker() {
+  git rev-parse --short "${STACK_SANDBOX_REMOTE}/${STACK_SANDBOX_TRUNK}" 2>/dev/null || git rev-parse --short "${STACK_SANDBOX_TRUNK}"
+}
+
 stack_sandbox_render_branch() {
   local branch="$1"
+  local trunk_marker=""
 
   mkdir -p "_test_data/sandbox"
   case "${branch}" in
@@ -391,18 +396,22 @@ resolution: child branch version
 EOF
       ;;
     sandbox-trunk-drift)
+      trunk_marker="$(stack_sandbox_trunk_marker)"
       mkdir -p "_test_data/sandbox/conflict"
       cat > "_test_data/sandbox/conflict/shared.txt" <<'EOF'
 conflict scenario
 owner: sandbox-trunk-drift
 resolution: trunk drift version
 EOF
+      printf "marker: %s\n" "${trunk_marker}" >> "_test_data/sandbox/conflict/shared.txt"
       ;;
     sandbox-queue-ready)
+      trunk_marker="$(stack_sandbox_trunk_marker)"
       mkdir -p "_test_data/sandbox/queue"
-      cat > "_test_data/sandbox/queue/ready.txt" <<'EOF'
+      cat > "_test_data/sandbox/queue/ready.txt" <<EOF
 queue-ready fixture
 purpose: isolated bottom PR for merge queue and auto-merge checks
+marker: ${trunk_marker}
 EOF
       ;;
     *)
