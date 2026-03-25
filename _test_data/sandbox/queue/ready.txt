@@ -1,0 +1,2 @@
+queue-ready fixture
+purpose: isolated bottom PR for merge queue and auto-merge checks
