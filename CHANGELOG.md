@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.2](https://github.com/hack-dance/stack/compare/v0.1.1...v0.1.2) (2026-03-25)
+
+
+### Bug Fixes
+
+* parse userless scp remote aliases ([e75c389](https://github.com/hack-dance/stack/commit/e75c3896ed6de3b3a078d5be65e2c40f18e7a957))
+* push release tags with configured token ([71fc029](https://github.com/hack-dance/stack/commit/71fc02944baff130e2c2832ed221e9f83587e978))
+* resolve repo from remote during init ([38914b6](https://github.com/hack-dance/stack/commit/38914b69d5e7d2c9c9bbf0fc121a4b9abd8aa448))
+* resolve repo from remote during init ([ffc793d](https://github.com/hack-dance/stack/commit/ffc793d0efe4cb867fec02606ef453af99a1d2ed))
+* separate release tagging from release please ([37f9eb3](https://github.com/hack-dance/stack/commit/37f9eb3488fd4f02a1faf4545af64721e97e0aaf))
+
 ## [0.1.1](https://github.com/hack-dance/stack/compare/stack-v0.1.0...stack-v0.1.1) (2026-03-25)
 
 
