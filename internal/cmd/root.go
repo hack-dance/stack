@@ -810,7 +810,21 @@ stack queue feature/a --yes
 				}
 			}
 
-			return runtime.GitHub.MergePR(runtime.Context, record.PR.Number, headOID, strategy)
+			if err := runtime.GitHub.MergePR(runtime.Context, record.PR.Number, headOID, strategy); err != nil {
+				return err
+			}
+
+			nextSteps := []string{
+				fmt.Sprintf("wait for GitHub to merge PR #%d", record.PR.Number),
+				"then run: stack sync",
+			}
+			children := stack.Children(state, branch)
+			if len(children) > 0 {
+				nextSteps = append(nextSteps, fmt.Sprintf("then run: stack submit %s", children[0]))
+				nextSteps = append(nextSteps, fmt.Sprintf("then run: stack queue %s", children[0]))
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), ui.RenderPreview("Next steps", nextSteps))
+			return nil
 		},
 	}
 

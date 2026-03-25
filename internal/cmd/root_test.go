@@ -532,6 +532,50 @@ func TestQueueAllowsConfiguredMergeStrategy(t *testing.T) {
 	}
 }
 
+func TestQueuePrintsNextStepsForDownstackBranch(t *testing.T) {
+	repo, runtime, featureAHead := setupTrackedStackRepo(t)
+	ghStub := testutil.SetupGHStub(t, "hack-dance/stack", "main")
+	t.Setenv("STACK_TEST_GH_STATE", ghStub.StatePath)
+	t.Setenv("STACK_TEST_GH_LOG", ghStub.LogPath)
+	t.Setenv("PATH", ghStub.Dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	writeGHState(t, ghStub.StatePath, `{
+  "repo": {
+    "nameWithOwner": "hack-dance/stack",
+    "url": "https://github.com/hack-dance/stack",
+    "defaultBranchRef": { "name": "main" }
+  },
+  "prs": {
+    "1": {
+      "id": "PR_1",
+      "number": 1,
+      "url": "https://example.com/hack-dance/stack/pull/1",
+      "repo": "hack-dance/stack",
+      "headRefName": "feature/a",
+      "baseRefName": "main",
+      "headRefOid": "`+featureAHead+`",
+      "baseRefOid": "",
+      "state": "OPEN",
+      "isDraft": false
+    }
+  },
+  "next_number": 2
+}`)
+
+	output := executeCommand(t, runtime, "queue", "feature/a", "--yes")
+	if !strings.Contains(output, "wait for GitHub to merge PR #1") {
+		t.Fatalf("expected merge guidance, got %q", output)
+	}
+	if !strings.Contains(output, "then run: stack submit feature/b") {
+		t.Fatalf("expected child submit guidance, got %q", output)
+	}
+	if !strings.Contains(output, "then run: stack queue feature/b") {
+		t.Fatalf("expected child queue guidance, got %q", output)
+	}
+
+	_ = repo
+}
+
 func executeCommand(t *testing.T, runtime *stackruntime.Runtime, args ...string) string {
 	t.Helper()
 
