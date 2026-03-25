@@ -58,6 +58,32 @@ func TestPushBranchRejectsStaleRemoteLease(t *testing.T) {
 	}
 }
 
+func TestIsAncestorReturnsFalseForSiblingCommits(t *testing.T) {
+	t.Parallel()
+
+	repo := setupGitRepo(t)
+	run(t, repo, "git", "switch", "-c", "feature/a")
+	writeFile(t, filepath.Join(repo, "feature-a.txt"), "a\n")
+	run(t, repo, "git", "add", "feature-a.txt")
+	run(t, repo, "git", "commit", "-m", "feature a")
+	featureHead := strings.TrimSpace(runOutput(t, repo, "git", "rev-parse", "HEAD"))
+
+	run(t, repo, "git", "switch", "main")
+	run(t, repo, "git", "switch", "-c", "feature/b")
+	writeFile(t, filepath.Join(repo, "feature-b.txt"), "b\n")
+	run(t, repo, "git", "add", "feature-b.txt")
+	run(t, repo, "git", "commit", "-m", "feature b")
+
+	client := stackgit.NewClient(repo)
+	isAncestor, err := client.IsAncestor(context.Background(), featureHead, "feature/b")
+	if err != nil {
+		t.Fatalf("is ancestor: %v", err)
+	}
+	if isAncestor {
+		t.Fatalf("expected sibling commit to not be an ancestor")
+	}
+}
+
 func setupGitRepo(t *testing.T) string {
 	t.Helper()
 
@@ -88,4 +114,16 @@ func run(t *testing.T, dir string, name string, args ...string) {
 	if err != nil {
 		t.Fatalf("%s %v: %v\n%s", name, args, err, string(output))
 	}
+}
+
+func runOutput(t *testing.T, dir string, name string, args ...string) string {
+	t.Helper()
+
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s %v: %v\n%s", name, args, err, string(output))
+	}
+	return string(output)
 }

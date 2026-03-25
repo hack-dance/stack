@@ -23,6 +23,18 @@ type RepoDetails struct {
 	} `json:"defaultBranchRef"`
 }
 
+type pullRequestPayload struct {
+	ID          string `json:"id"`
+	Number      int    `json:"number"`
+	URL         string `json:"url"`
+	BaseRefName string `json:"baseRefName"`
+	BaseRefOID  string `json:"baseRefOid"`
+	HeadRefName string `json:"headRefName"`
+	HeadRefOID  string `json:"headRefOid"`
+	State       string `json:"state"`
+	IsDraft     bool   `json:"isDraft"`
+}
+
 func NewClient(cwd string) *Client {
 	return &Client{cwd: cwd}
 }
@@ -73,16 +85,16 @@ func (c *Client) FindPRByHead(ctx context.Context, branch string) (store.PullReq
 		return store.PullRequest{}, err
 	}
 
-	var prs []store.PullRequest
-	if err := json.Unmarshal([]byte(output), &prs); err != nil {
+	var payload []pullRequestPayload
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
 		return store.PullRequest{}, err
 	}
 
-	if len(prs) == 0 {
+	if len(payload) == 0 {
 		return store.PullRequest{}, nil
 	}
 
-	return prs[0], nil
+	return payload[0].toStorePullRequest(), nil
 }
 
 func (c *Client) CreatePR(ctx context.Context, base string, head string, title string, body string, draft bool) (store.PullRequest, error) {
@@ -128,11 +140,25 @@ func (c *Client) MergePR(ctx context.Context, number int, headOID string) error 
 }
 
 func decodePR(raw string) (store.PullRequest, error) {
-	var pr store.PullRequest
-	if err := json.Unmarshal([]byte(raw), &pr); err != nil {
+	var payload pullRequestPayload
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		return store.PullRequest{}, err
 	}
-	return pr, nil
+	return payload.toStorePullRequest(), nil
+}
+
+func (payload pullRequestPayload) toStorePullRequest() store.PullRequest {
+	return store.PullRequest{
+		ID:              payload.ID,
+		Number:          payload.Number,
+		URL:             payload.URL,
+		HeadRefName:     payload.HeadRefName,
+		BaseRefName:     payload.BaseRefName,
+		LastSeenHeadOID: payload.HeadRefOID,
+		LastSeenBaseOID: payload.BaseRefOID,
+		State:           payload.State,
+		IsDraft:         payload.IsDraft,
+	}
 }
 
 func (c *Client) run(ctx context.Context, args ...string) (string, error) {

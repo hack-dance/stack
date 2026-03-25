@@ -58,6 +58,10 @@ mise exec -- go build ./...
 mise exec -- go run ./cmd/stack status
 ```
 
+## Testing
+
+The test strategy and opt-in GitHub sandbox checks live in [docs/testing.md](docs/testing.md).
+
 ## Design
 
 The reduced V1 design lives at [docs/v1.md](docs/v1.md).

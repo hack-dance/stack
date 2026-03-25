@@ -97,7 +97,10 @@ func (c *Client) RemoteBranchOID(ctx context.Context, remote string, branch stri
 }
 
 func (c *Client) IsAncestor(ctx context.Context, ancestor string, descendant string) (bool, error) {
-	_, err := c.run(ctx, "merge-base", "--is-ancestor", ancestor, descendant)
+	cmd := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", ancestor, descendant)
+	cmd.Dir = c.cwd
+
+	err := cmd.Run()
 	if err == nil {
 		return true, nil
 	}
