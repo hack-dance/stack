@@ -1,0 +1,4 @@
+conflict scenario
+owner: sandbox-trunk-drift
+resolution: trunk drift version
+marker: e7e33dc
