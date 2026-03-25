@@ -24,8 +24,6 @@ addition to the global baseline instructions.
 ## Commits And Releases
 
 - Use Conventional Commits for commit subjects.
-- Keep pull request titles conventional as well; the release flow depends on
-  it.
 - Before touching release behavior or release automation, read
   [docs/releasing.md](docs/releasing.md).
 
@@ -34,4 +32,3 @@ addition to the global baseline instructions.
 - Do not commit local build outputs such as the root `stack` binary.
 - If a generated or built artifact appears repeatedly during normal work, add it
   to `.gitignore` in the same change that introduces the behavior.
-
