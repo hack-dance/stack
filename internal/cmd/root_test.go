@@ -331,6 +331,269 @@ func TestMoveRestacksDescendantSubtree(t *testing.T) {
 	}
 }
 
+func TestMoveDoesNotPersistParentWhenDescendantAnchorMissing(t *testing.T) {
+	repo := testutil.SetupGitRepo(t)
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	testutil.Run(t, repo, "git", "init", "--bare", remote)
+	testutil.Run(t, repo, "git", "remote", "add", "origin", remote)
+	testutil.Run(t, repo, "git", "push", "-u", "origin", "main")
+
+	testutil.Run(t, repo, "git", "switch", "-c", "feature/base")
+	testutil.WriteFile(t, filepath.Join(repo, "feature-base.txt"), "feature base\n")
+	testutil.Run(t, repo, "git", "add", "feature-base.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "add feature base")
+	testutil.Run(t, repo, "git", "push", "-u", "origin", "feature/base")
+
+	testutil.Run(t, repo, "git", "switch", "main")
+	testutil.Run(t, repo, "git", "switch", "-c", "feature/a")
+	testutil.WriteFile(t, filepath.Join(repo, "feature-a.txt"), "feature a\n")
+	testutil.Run(t, repo, "git", "add", "feature-a.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "add feature a")
+	testutil.Run(t, repo, "git", "push", "-u", "origin", "feature/a")
+	featureAHead := strings.TrimSpace(testutil.Run(t, repo, "git", "rev-parse", "feature/a"))
+
+	testutil.Run(t, repo, "git", "switch", "-c", "feature/b")
+	testutil.WriteFile(t, filepath.Join(repo, "feature-b.txt"), "feature b\n")
+	testutil.Run(t, repo, "git", "add", "feature-b.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "add feature b")
+	testutil.Run(t, repo, "git", "push", "-u", "origin", "feature/b")
+
+	runtime := newTestRuntime(repo)
+	mainHead, err := runtime.Git.ResolveRef(runtime.Context, "main")
+	if err != nil {
+		t.Fatalf("resolve main head: %v", err)
+	}
+	state := store.RepoState{
+		Version:       1,
+		Repo:          "hack-dance/stack",
+		DefaultRemote: "origin",
+		Trunk:         "main",
+		Branches: map[string]store.BranchRecord{
+			"feature/base": {
+				ParentBranch: "main",
+				RemoteName:   "origin",
+				Restack: store.RestackMetadata{
+					LastParentHeadOID: mainHead,
+				},
+			},
+			"feature/a": {
+				ParentBranch: "main",
+				RemoteName:   "origin",
+				Restack: store.RestackMetadata{
+					LastParentHeadOID: mainHead,
+				},
+			},
+			"feature/b": {
+				ParentBranch: "feature/a",
+				RemoteName:   "origin",
+				Restack:      store.RestackMetadata{},
+			},
+		},
+	}
+	if err := runtime.Store.WriteState(runtime.Context, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	err = executeCommandExpectError(runtime, "move", "feature/a", "--parent", "feature/base", "--yes")
+	if err == nil || !strings.Contains(err.Error(), "feature/b") || !strings.Contains(err.Error(), "no recorded restack anchor") {
+		t.Fatalf("expected descendant anchor error, got %v", err)
+	}
+
+	state, err = runtime.Store.ReadState(runtime.Context)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if got := state.Branches["feature/a"].ParentBranch; got != "main" {
+		t.Fatalf("expected feature/a parent to stay main, got %q", got)
+	}
+	if got := state.Branches["feature/b"].Restack.LastParentHeadOID; got != "" {
+		t.Fatalf("expected missing feature/b anchor to remain empty, got %q", got)
+	}
+	if got := strings.TrimSpace(testutil.Run(t, repo, "git", "rev-parse", "feature/a")); got != featureAHead {
+		t.Fatalf("expected feature/a head to stay %q, got %q", featureAHead, got)
+	}
+}
+
+func TestMoveRepairsDescendantWithStaleRecordedAnchor(t *testing.T) {
+	repo := testutil.SetupGitRepo(t)
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	testutil.Run(t, repo, "git", "init", "--bare", remote)
+	testutil.Run(t, repo, "git", "remote", "add", "origin", remote)
+	testutil.Run(t, repo, "git", "push", "-u", "origin", "main")
+
+	testutil.Run(t, repo, "git", "switch", "-c", "feature/base")
+	testutil.WriteFile(t, filepath.Join(repo, "feature-base.txt"), "feature base\n")
+	testutil.Run(t, repo, "git", "add", "feature-base.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "add feature base")
+	testutil.Run(t, repo, "git", "push", "-u", "origin", "feature/base")
+
+	testutil.Run(t, repo, "git", "switch", "-c", "unrelated")
+	testutil.WriteFile(t, filepath.Join(repo, "unrelated.txt"), "unrelated\n")
+	testutil.Run(t, repo, "git", "add", "unrelated.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "add unrelated")
+	unrelatedHead := strings.TrimSpace(testutil.Run(t, repo, "git", "rev-parse", "HEAD"))
+
+	testutil.Run(t, repo, "git", "switch", "main")
+	testutil.Run(t, repo, "git", "switch", "-c", "feature/a")
+	testutil.WriteFile(t, filepath.Join(repo, "feature-a.txt"), "feature a\n")
+	testutil.Run(t, repo, "git", "add", "feature-a.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "add feature a")
+	testutil.Run(t, repo, "git", "push", "-u", "origin", "feature/a")
+
+	testutil.Run(t, repo, "git", "switch", "-c", "feature/b")
+	testutil.WriteFile(t, filepath.Join(repo, "feature-b.txt"), "feature b\n")
+	testutil.Run(t, repo, "git", "add", "feature-b.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "add feature b")
+	testutil.Run(t, repo, "git", "push", "-u", "origin", "feature/b")
+	oldFeatureBHead := strings.TrimSpace(testutil.Run(t, repo, "git", "rev-parse", "feature/b"))
+
+	runtime := newTestRuntime(repo)
+	mainHead, err := runtime.Git.ResolveRef(runtime.Context, "main")
+	if err != nil {
+		t.Fatalf("resolve main head: %v", err)
+	}
+	state := store.RepoState{
+		Version:       1,
+		Repo:          "hack-dance/stack",
+		DefaultRemote: "origin",
+		Trunk:         "main",
+		Branches: map[string]store.BranchRecord{
+			"feature/base": {
+				ParentBranch: "main",
+				RemoteName:   "origin",
+				Restack: store.RestackMetadata{
+					LastParentHeadOID: mainHead,
+				},
+			},
+			"feature/a": {
+				ParentBranch: "main",
+				RemoteName:   "origin",
+				Restack: store.RestackMetadata{
+					LastParentHeadOID: mainHead,
+				},
+			},
+			"feature/b": {
+				ParentBranch: "feature/a",
+				RemoteName:   "origin",
+				Restack: store.RestackMetadata{
+					LastParentHeadOID: unrelatedHead,
+				},
+			},
+		},
+	}
+	if err := runtime.Store.WriteState(runtime.Context, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	output := executeCommand(t, runtime, "move", "feature/a", "--parent", "feature/base", "--yes")
+	if !strings.Contains(output, "feature/b: restack on top of rewritten feature/a") {
+		t.Fatalf("expected descendant preview, got %q", output)
+	}
+
+	state, err = runtime.Store.ReadState(runtime.Context)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if got := state.Branches["feature/a"].ParentBranch; got != "feature/base" {
+		t.Fatalf("expected feature/a parent to be feature/base, got %q", got)
+	}
+	newFeatureAHead := strings.TrimSpace(testutil.Run(t, repo, "git", "rev-parse", "feature/a"))
+	if got := state.Branches["feature/b"].Restack.LastParentHeadOID; got != newFeatureAHead {
+		t.Fatalf("expected feature/b anchor to be repaired to %q, got %q", newFeatureAHead, got)
+	}
+	if got := strings.TrimSpace(testutil.Run(t, repo, "git", "rev-parse", "feature/b")); got == oldFeatureBHead {
+		t.Fatalf("expected feature/b head to change after repaired move")
+	}
+}
+
+func TestMoveAbortRestoresOriginalParentAfterConflict(t *testing.T) {
+	repo := testutil.SetupGitRepo(t)
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	testutil.Run(t, repo, "git", "init", "--bare", remote)
+	testutil.Run(t, repo, "git", "remote", "add", "origin", remote)
+	testutil.Run(t, repo, "git", "push", "-u", "origin", "main")
+
+	testutil.WriteFile(t, filepath.Join(repo, "shared.txt"), "base\n")
+	testutil.Run(t, repo, "git", "add", "shared.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "add shared file")
+	testutil.Run(t, repo, "git", "push", "origin", "main")
+
+	testutil.Run(t, repo, "git", "switch", "-c", "feature/base")
+	testutil.WriteFile(t, filepath.Join(repo, "shared.txt"), "base branch\n")
+	testutil.Run(t, repo, "git", "add", "shared.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "change shared on feature base")
+	testutil.Run(t, repo, "git", "push", "-u", "origin", "feature/base")
+
+	testutil.Run(t, repo, "git", "switch", "main")
+	testutil.Run(t, repo, "git", "switch", "-c", "feature/a")
+	testutil.WriteFile(t, filepath.Join(repo, "shared.txt"), "feature a branch\n")
+	testutil.Run(t, repo, "git", "add", "shared.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "change shared on feature a")
+	testutil.Run(t, repo, "git", "push", "-u", "origin", "feature/a")
+
+	runtime := newTestRuntime(repo)
+	mainHead, err := runtime.Git.ResolveRef(runtime.Context, "main")
+	if err != nil {
+		t.Fatalf("resolve main head: %v", err)
+	}
+	state := store.RepoState{
+		Version:       1,
+		Repo:          "hack-dance/stack",
+		DefaultRemote: "origin",
+		Trunk:         "main",
+		Branches: map[string]store.BranchRecord{
+			"feature/base": {
+				ParentBranch: "main",
+				RemoteName:   "origin",
+				Restack: store.RestackMetadata{
+					LastParentHeadOID: mainHead,
+				},
+			},
+			"feature/a": {
+				ParentBranch: "main",
+				RemoteName:   "origin",
+				Restack: store.RestackMetadata{
+					LastParentHeadOID: mainHead,
+				},
+			},
+		},
+	}
+	if err := runtime.Store.WriteState(runtime.Context, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	err = executeCommandExpectError(runtime, "move", "feature/a", "--parent", "feature/base", "--yes")
+	if err == nil {
+		t.Fatalf("expected conflict during move")
+	}
+
+	rebaseInProgress, err := runtime.Git.RebaseInProgress(runtime.Context)
+	if err != nil {
+		t.Fatalf("rebase in progress: %v", err)
+	}
+	if !rebaseInProgress {
+		t.Fatalf("expected rebase to be in progress after conflicting move")
+	}
+
+	executeCommand(t, runtime, "abort")
+
+	rebaseInProgress, err = runtime.Git.RebaseInProgress(runtime.Context)
+	if err != nil {
+		t.Fatalf("rebase in progress after abort: %v", err)
+	}
+	if rebaseInProgress {
+		t.Fatalf("expected rebase to be cleared after abort")
+	}
+
+	state, err = runtime.Store.ReadState(runtime.Context)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if got := state.Branches["feature/a"].ParentBranch; got != "main" {
+		t.Fatalf("expected feature/a parent to stay main after abort, got %q", got)
+	}
+}
+
 func TestSyncApplySkipsAmbiguousMergedParent(t *testing.T) {
 	_, runtime, _ := setupTrackedStackRepo(t)
 	ghStub := testutil.SetupGHStub(t, "hack-dance/stack", "main")
@@ -789,6 +1052,20 @@ func executeCommand(t *testing.T, runtime *stackruntime.Runtime, args ...string)
 	}
 
 	return stdout.String()
+}
+
+func executeCommandExpectError(runtime *stackruntime.Runtime, args ...string) error {
+	root := NewRootCommand(runtime)
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	root.SetArgs(args)
+	root.SetOut(stdout)
+	root.SetErr(stderr)
+
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		return err
+	}
+	return nil
 }
 
 func newTestRuntime(repo string) *stackruntime.Runtime {

@@ -447,6 +447,11 @@ stack move feature/b --parent main --yes
 			if !runtime.Git.BranchExists(runtime.Context, parent) && parent != state.Trunk {
 				return fmt.Errorf("parent branch %q does not exist locally", parent)
 			}
+			if parent != state.Trunk {
+				if _, ok := state.Branches[parent]; !ok {
+					return fmt.Errorf("parent branch %q is not tracked in local metadata; track it first or move under %s", parent, state.Trunk)
+				}
+			}
 			if err := stack.EnsureBranchCanParent(state, branch, parent); err != nil {
 				return err
 			}
@@ -471,13 +476,12 @@ stack move feature/b --parent main --yes
 			if previousParentHead == "" {
 				return fmt.Errorf("branch %q has no recorded restack anchor; cannot move safely", branch)
 			}
-			record.ParentBranch = parent
-			state.Branches[branch] = record
-			if err := runtime.Store.WriteState(runtime.Context, state); err != nil {
-				return err
-			}
 
-			steps, err := restackStepsForTargets(runtime, state, []string{branch})
+			plannedState := cloneRepoState(state)
+			record.ParentBranch = parent
+			plannedState.Branches[branch] = record
+
+			steps, err := restackStepsForTargets(runtime, plannedState, []string{branch})
 			if err != nil {
 				return err
 			}
@@ -489,7 +493,7 @@ stack move feature/b --parent main --yes
 					PreviousBranchHead: resolveOID(runtime, branch),
 				}}
 			}
-			return runRestackPlan(runtime, state, steps, nil)
+			return runRestackPlan(runtime, plannedState, steps, nil)
 		},
 	}
 
@@ -1132,6 +1136,15 @@ func collectSubtree(state store.RepoState, root string) []string {
 		branches = append(branches, collectSubtree(state, child)...)
 	}
 	return branches
+}
+
+func cloneRepoState(state store.RepoState) store.RepoState {
+	cloned := state
+	cloned.Branches = make(map[string]store.BranchRecord, len(state.Branches))
+	for branch, record := range state.Branches {
+		cloned.Branches[branch] = record
+	}
+	return cloned
 }
 
 func chooseString(value string, fallback string) string {
