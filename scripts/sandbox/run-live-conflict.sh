@@ -28,14 +28,6 @@ child_branch="sandbox-conflict-child"
 echo "Building stack CLI"
 stack_sandbox_go build -o "${binary}" ./cmd/stack
 
-echo "Merging ${drift_branch} to create real trunk drift"
-drift_number="$(stack_sandbox_pr_number "${drift_branch}")"
-if [[ -z "${drift_number}" ]]; then
-  echo "Missing open PR for ${drift_branch}; reseed fixtures first." >&2
-  exit 1
-fi
-gh pr merge --repo "${STACK_SANDBOX_REPO}" "${drift_number}" --merge --delete-branch=false >/dev/null
-
 echo "Cloning sandbox repo into ${clone_dir}"
 gh repo clone "${STACK_SANDBOX_REPO}" "${clone_dir}" -- --quiet
 
@@ -50,6 +42,20 @@ git -C "${clone_dir}" branch -f "${child_branch}" "origin/${child_branch}" >/dev
   "${binary}" init --trunk "${STACK_SANDBOX_TRUNK}" --remote origin
   "${binary}" track "${base_branch}" --parent "${STACK_SANDBOX_TRUNK}"
   "${binary}" track "${child_branch}" --parent "${base_branch}"
+)
+
+echo "Merging ${drift_branch} to create real trunk drift"
+drift_number="$(stack_sandbox_pr_number "${drift_branch}")"
+if [[ -z "${drift_number}" ]]; then
+  echo "Missing open PR for ${drift_branch}; reseed fixtures first." >&2
+  exit 1
+fi
+gh pr merge --repo "${STACK_SANDBOX_REPO}" "${drift_number}" --merge --delete-branch=false >/dev/null
+
+(
+  cd "${clone_dir}"
+  git fetch origin "${STACK_SANDBOX_TRUNK}" >/dev/null
+  git reset --hard "origin/${STACK_SANDBOX_TRUNK}" >/dev/null
 
   set +e
   "${binary}" restack "${base_branch}" --yes
