@@ -5,6 +5,7 @@ Start here if you want the public documentation for `stack`.
 ## Product docs
 
 - [install.md](install.md) for Homebrew, release artifacts, and source builds
+- [adopting-existing-prs.md](adopting-existing-prs.md) for turning an existing PR set into an explicit stack
 - [how-it-works.md](how-it-works.md) for stacked PR concepts, merge queue, and workflow shape
 - [usage.md](usage.md) for the everyday command flow
 - [troubleshooting.md](troubleshooting.md) for repair paths when state drifts

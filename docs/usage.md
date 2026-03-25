@@ -21,6 +21,10 @@ Or adopt an existing branch and make the parent explicit:
 stack track feature/child --parent feature/base
 ```
 
+If you already have a larger set of open PRs and want to turn them into an
+explicit stack after the fact, use
+[adopting-existing-prs.md](adopting-existing-prs.md).
+
 ## Inspect first
 
 Use `status` before you mutate anything:

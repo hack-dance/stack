@@ -77,9 +77,28 @@ stack queue feature/base
 
 For the full daily workflow, start with [docs/usage.md](docs/usage.md).
 
+## Starting from existing PRs
+
+You do not need to start with a clean stack on day one.
+
+If you already have a pile of open PRs, `stack` can still help you turn them
+into an explicit stack so you can test them as a composed set, land them in a
+clean order, and handle conflicts with less guesswork.
+
+The practical path is:
+
+1. check out the repo locally and make sure you have local branches for the PR heads you care about
+2. decide the intended parent chain or grouping
+3. run `stack track <branch> --parent <parent>` for each branch
+4. run `stack status` and `stack sync` to see what does not match yet
+5. use `stack move`, `stack restack`, and `stack submit` to bring the stack into shape
+
+That adoption flow is documented in [docs/adopting-existing-prs.md](docs/adopting-existing-prs.md).
+
 ## Documentation
 
 - [docs/README.md](docs/README.md) for the full docs index
+- [docs/adopting-existing-prs.md](docs/adopting-existing-prs.md) for grouping and ordering an existing PR set
 - [docs/how-it-works.md](docs/how-it-works.md) for the model and workflow
 - [docs/usage.md](docs/usage.md) for everyday commands and repair loops
 - [docs/troubleshooting.md](docs/troubleshooting.md) for common failure modes
