@@ -79,6 +79,25 @@ EOF
   git add "_test_data/sandbox/conflict/shared.txt"
   "${binary}" continue
 
+  if [[ -f ".git/stack/op.json" ]]; then
+    echo "Operation journal still present after finishing base restack." >&2
+    exit 1
+  fi
+
+  set +e
+  "${binary}" restack "${child_branch}" --yes
+  restack_status=$?
+  set -e
+  if [[ ${restack_status} -eq 0 ]]; then
+    echo "Expected ${child_branch} restack to conflict after parent moved, but it succeeded." >&2
+    exit 1
+  fi
+
+  if [[ ! -f ".git/stack/op.json" ]]; then
+    echo "Expected worktree operation journal for child restack at .git/stack/op.json" >&2
+    exit 1
+  fi
+
   cat > "_test_data/sandbox/conflict/shared.txt" <<'EOF'
 conflict scenario
 owner: sandbox-conflict-child
