@@ -1,0 +1,69 @@
+version: 2
+
+project_name: stack
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: stack
+    main: ./cmd/stack
+    binary: stack
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/hack-dance/stack/internal/buildinfo.Version={{ .Version }}
+      - -X github.com/hack-dance/stack/internal/buildinfo.Commit={{ .Commit }}
+      - -X github.com/hack-dance/stack/internal/buildinfo.Date={{ .Date }}
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  github:
+    owner: hack-dance
+    name: stack
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+brews:
+  - name: stack
+    repository:
+      owner: hack-dance
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/hack-dance/stack
+    description: Stacked PR CLI for GitHub built with Go and Charm
+    commit_author:
+      name: hack-dance bot
+      email: bot@hack.dance
+    commit_msg_template: "chore(brew): bump {{ .ProjectName }} to {{ .Tag }}"
+    dependencies:
+      - name: git
+      - name: gh
+    install: |
+      bin.install "stack"
+    test: |
+      system "#{bin}/stack", "version"

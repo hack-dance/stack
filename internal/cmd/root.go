@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hack-dance/stack/internal/buildinfo"
 	"github.com/hack-dance/stack/internal/docs"
 	"github.com/hack-dance/stack/internal/forms"
 	stackruntime "github.com/hack-dance/stack/internal/runtime"
@@ -43,6 +44,7 @@ to GitHub merge queue via the gh CLI.
 		newCreateCommand(runtime),
 		newTrackCommand(runtime),
 		newStatusCommand(runtime),
+		newVersionCommand(),
 		newTUICommand(runtime),
 		newRestackCommand(runtime),
 		newContinueCommand(runtime),
@@ -63,6 +65,18 @@ to GitHub merge queue via the gh CLI.
 	})
 
 	return rootCmd
+}
+
+func newVersionCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print version, commit, and build date",
+		Long:  "Print the stack CLI version information embedded at build time.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), buildinfo.Summary())
+			return nil
+		},
+	}
 }
 
 func newInitCommand(runtime *stackruntime.Runtime) *cobra.Command {

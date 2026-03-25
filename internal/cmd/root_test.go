@@ -821,6 +821,19 @@ func TestSubmitCreatesAndTracksPR(t *testing.T) {
 	}
 }
 
+func TestVersionCommandPrintsBuildInfo(t *testing.T) {
+	repo := testutil.SetupGitRepo(t)
+	runtime := newTestRuntime(repo)
+
+	output := executeCommand(t, runtime, "version")
+	if !strings.Contains(output, "dev") {
+		t.Fatalf("expected dev version output, got %q", output)
+	}
+	if !strings.Contains(output, "commit") {
+		t.Fatalf("expected commit metadata, got %q", output)
+	}
+}
+
 func TestQueueMergesHealthyBottomBranch(t *testing.T) {
 	repo := testutil.SetupGitRepo(t)
 	remote := filepath.Join(t.TempDir(), "remote.git")

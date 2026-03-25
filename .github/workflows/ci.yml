@@ -8,10 +8,17 @@ on:
 
 jobs:
   test:
-    runs-on: macos-latest
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: jdx/mise-action@v2
       - run: mise install
       - run: mise exec -- go test ./...
-
+      - run: mise exec -- go build ./...
+      - run: mise exec -- go run ./tools/gendocs
+      - run: git diff --exit-code docs/cli
