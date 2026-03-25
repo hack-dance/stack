@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -62,6 +63,11 @@ func (c *Client) CurrentBranch(ctx context.Context) (string, error) {
 	return c.output(ctx, "branch", "--show-current")
 }
 
+func (c *Client) Switch(ctx context.Context, branch string) error {
+	_, err := c.run(ctx, "switch", branch)
+	return err
+}
+
 func (c *Client) ResolveRef(ctx context.Context, ref string) (string, error) {
 	return c.output(ctx, "rev-parse", ref)
 }
@@ -72,8 +78,22 @@ func (c *Client) BranchExists(ctx context.Context, branch string) bool {
 }
 
 func (c *Client) RemoteBranchExists(ctx context.Context, remote string, branch string) bool {
-	_, err := c.output(ctx, "show-ref", "--verify", fmt.Sprintf("refs/remotes/%s/%s", remote, branch))
-	return err == nil
+	_, exists, err := c.RemoteBranchOID(ctx, remote, branch)
+	return err == nil && exists
+}
+
+func (c *Client) RemoteBranchOID(ctx context.Context, remote string, branch string) (string, bool, error) {
+	ref := fmt.Sprintf("refs/remotes/%s/%s", remote, branch)
+	oid, err := c.output(ctx, "rev-parse", ref)
+	if err == nil {
+		return oid, true, nil
+	}
+
+	if strings.Contains(err.Error(), "unknown revision") || strings.Contains(err.Error(), "Needed a single revision") {
+		return "", false, nil
+	}
+
+	return "", false, err
 }
 
 func (c *Client) IsAncestor(ctx context.Context, ancestor string, descendant string) (bool, error) {
@@ -100,14 +120,16 @@ func (c *Client) FetchPrune(ctx context.Context, remote string) error {
 	return err
 }
 
-func (c *Client) PushForceWithLease(ctx context.Context, remote string, branch string) error {
-	_, err := c.run(
-		ctx,
-		"push",
-		"--force-with-lease",
-		remote,
-		fmt.Sprintf("%s:refs/heads/%s", branch, branch),
-	)
+func (c *Client) PushBranch(ctx context.Context, remote string, branch string, expectedRemoteOID string) error {
+	args := []string{"push"}
+	if expectedRemoteOID != "" {
+		args = append(args, fmt.Sprintf("--force-with-lease=refs/heads/%s:%s", branch, expectedRemoteOID))
+	} else {
+		args = append(args, "--set-upstream")
+	}
+	args = append(args, remote, fmt.Sprintf("%s:refs/heads/%s", branch, branch))
+
+	_, err := c.run(ctx, args...)
 	return err
 }
 
@@ -136,7 +158,8 @@ func (c *Client) RebaseInProgress(ctx context.Context) (bool, error) {
 		filepath.Join(paths.GitDir, "rebase-merge"),
 		filepath.Join(paths.GitDir, "rebase-apply"),
 	} {
-		if _, err := exec.CommandContext(ctx, "test", "-d", candidate).Output(); err == nil {
+		info, err := os.Stat(candidate)
+		if err == nil && info.IsDir() {
 			return true, nil
 		}
 	}

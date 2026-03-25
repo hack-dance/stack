@@ -165,6 +165,16 @@ func (m *model) syncViewport() {
 			ui.SectionStyle.Render("Health"),
 		}
 
+		if len(m.summary.RepoIssues) > 0 {
+			lines = append(lines, "")
+			lines = append(lines, ui.SectionStyle.Render("Repository"))
+			for _, issue := range m.summary.RepoIssues {
+				lines = append(lines, fmt.Sprintf("- %s", issue.Message))
+			}
+			lines = append(lines, "")
+			lines = append(lines, ui.SectionStyle.Render("Branch"))
+		}
+
 		if len(branch.Issues) == 0 {
 			lines = append(lines, ui.HealthyBadgeStyle.Render("No issues detected."))
 		} else {

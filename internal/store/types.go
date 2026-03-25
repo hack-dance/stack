@@ -37,10 +37,13 @@ type RestackMetadata struct {
 type OperationState struct {
 	Version        int           `json:"version"`
 	Type           string        `json:"type"`
+	Repo           string        `json:"repo,omitempty"`
 	RepositoryRoot string        `json:"repositoryRoot"`
 	WorktreeGitDir string        `json:"worktreeGitDir"`
+	OriginalBranch string        `json:"originalBranch"`
 	OriginalHEAD   string        `json:"originalHead"`
 	StartedAt      string        `json:"startedAt"`
+	ActiveHead     string        `json:"activeHead,omitempty"`
 	Active         RestackStep   `json:"active"`
 	Pending        []RestackStep `json:"pending"`
 }
@@ -49,4 +52,5 @@ type RestackStep struct {
 	Branch             string `json:"branch"`
 	Parent             string `json:"parent"`
 	PreviousParentHead string `json:"previousParentHead"`
+	PreviousBranchHead string `json:"previousBranchHead,omitempty"`
 }

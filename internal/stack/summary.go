@@ -43,6 +43,7 @@ type Summary struct {
 	Trunk          string          `json:"trunk"`
 	DefaultRemote  string          `json:"defaultRemote"`
 	CurrentBranch  string          `json:"currentBranch,omitempty"`
+	RepoIssues     []HealthIssue   `json:"repoIssues,omitempty"`
 	UntrackedHeads []string        `json:"untrackedHeads,omitempty"`
 	Branches       []BranchSummary `json:"branches"`
 }
@@ -54,6 +55,7 @@ func BuildSummary(ctx context.Context, git *stackgit.Client, state store.RepoSta
 	}
 
 	currentBranch, _ := git.CurrentBranch(ctx)
+	validation := ValidateState(state)
 	branches := make([]BranchSummary, 0, len(state.Branches))
 
 	for _, branchName := range topoOrder(state) {
@@ -83,12 +85,7 @@ func BuildSummary(ctx context.Context, git *stackgit.Client, state store.RepoSta
 			}
 		}
 
-		if record.ParentBranch == "" {
-			summary.Issues = append(summary.Issues, HealthIssue{
-				Severity: SeverityError,
-				Message:  "missing parent branch",
-			})
-		}
+		summary.Issues = append(summary.Issues, validation.BranchIssues[branchName]...)
 
 		if !summary.LocalExists {
 			summary.Issues = append(summary.Issues, HealthIssue{
@@ -137,6 +134,18 @@ func BuildSummary(ctx context.Context, git *stackgit.Client, state store.RepoSta
 		}
 
 		if record.PR.Number > 0 {
+			if record.PR.State == "CLOSED" {
+				summary.Issues = append(summary.Issues, HealthIssue{
+					Severity: SeverityWarn,
+					Message:  "tracked PR is closed and needs repair or relink",
+				})
+			}
+			if record.PR.State == "MERGED" {
+				summary.Issues = append(summary.Issues, HealthIssue{
+					Severity: SeverityInfo,
+					Message:  "tracked PR is merged; descendants may need sync",
+				})
+			}
 			if record.PR.BaseRefName != "" && record.PR.BaseRefName != record.ParentBranch {
 				summary.Issues = append(summary.Issues, HealthIssue{
 					Severity: SeverityWarn,
@@ -149,6 +158,12 @@ func BuildSummary(ctx context.Context, git *stackgit.Client, state store.RepoSta
 					Message:  fmt.Sprintf("cached PR head is %q, expected %q", record.PR.HeadRefName, branchName),
 				})
 			}
+			if summary.CurrentHeadOID != "" && record.PR.LastSeenHeadOID != "" && record.PR.LastSeenHeadOID != summary.CurrentHeadOID {
+				summary.Issues = append(summary.Issues, HealthIssue{
+					Severity: SeverityInfo,
+					Message:  "local branch head differs from last synced PR head",
+				})
+			}
 		}
 
 		branches = append(branches, summary)
@@ -159,6 +174,7 @@ func BuildSummary(ctx context.Context, git *stackgit.Client, state store.RepoSta
 		Trunk:         state.Trunk,
 		DefaultRemote: state.DefaultRemote,
 		CurrentBranch: strings.TrimSpace(currentBranch),
+		RepoIssues:    validation.RepoIssues,
 		Branches:      branches,
 	}, nil
 }
@@ -222,6 +238,7 @@ func Children(state store.RepoState, parent string) []string {
 func depthFor(state store.RepoState, branch string) int {
 	depth := 0
 	current := branch
+	seen := map[string]bool{}
 
 	for {
 		record, ok := state.Branches[current]
@@ -231,6 +248,10 @@ func depthFor(state store.RepoState, branch string) int {
 		if record.ParentBranch == state.Trunk {
 			return depth
 		}
+		if seen[current] {
+			return depth
+		}
+		seen[current] = true
 		depth += 1
 		current = record.ParentBranch
 	}

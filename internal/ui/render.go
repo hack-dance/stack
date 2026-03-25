@@ -13,8 +13,21 @@ func RenderStatus(summary stack.Summary) string {
 		TitleStyle.Render("stack status"),
 		SubtitleStyle.Render(fmt.Sprintf("%s  •  trunk %s  •  remote %s", summary.RepoRoot, summary.Trunk, summary.DefaultRemote)),
 		"",
-		SectionStyle.Render("Branches"),
+		SectionStyle.Render("Repository"),
 	}
+
+	if len(summary.RepoIssues) == 0 {
+		lines = append(lines, MutedStyle.Render("No repository-level issues detected."))
+	} else {
+		for _, issue := range summary.RepoIssues {
+			lines = append(lines, fmt.Sprintf("- %s", renderIssue(issue)))
+		}
+	}
+
+	lines = append(lines,
+		"",
+		SectionStyle.Render("Branches"),
+	)
 
 	if len(summary.Branches) == 0 {
 		lines = append(lines, MutedStyle.Render("No tracked branches yet. Start with `stack init` then `stack create <branch>`."))

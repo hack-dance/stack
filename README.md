@@ -12,19 +12,32 @@ drift clearly, and favors repairable workflows over hidden automation.
 - per-worktree operation journals for interrupted rebases
 - command-first UX with polished terminal output
 - read-only Bubble Tea dashboard for stack inspection
+- deterministic restack and recovery scaffolding
+- explicit submit, sync, move, and queue command flows
 - `git` and `gh` CLI only
 - no GraphQL, no backend, no synthetic refs
 
-## First Commands
+## Implemented Commands
 
 - `stack init`
 - `stack create <branch>`
 - `stack track <branch> --parent <parent>`
 - `stack status`
 - `stack tui`
+- `stack restack`
+- `stack continue`
+- `stack abort`
+- `stack submit`
+- `stack sync`
+- `stack move`
+- `stack queue`
 
-Later phases add restack, submit, sync, move, queue, and recovery commands on
-top of the same state model.
+## Current Caveats
+
+- restack and sync safety are implemented, but still need deeper fixture coverage
+- GitHub sandbox coverage for submit, sync, and queue still needs expansion
+- the TUI is intentionally read-only in the current alpha
+- ambiguous merged-parent repair cases stop for review instead of guessing
 
 ## Tooling
 
@@ -41,10 +54,10 @@ top of the same state model.
 ```bash
 mise install
 mise exec -- go test ./...
+mise exec -- go build ./...
 mise exec -- go run ./cmd/stack status
 ```
 
 ## Design
 
 The reduced V1 design lives at [docs/v1.md](docs/v1.md).
-

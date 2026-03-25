@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	stackgit "github.com/hack-dance/stack/internal/git"
@@ -37,6 +38,36 @@ func TestInitAndReadState(t *testing.T) {
 	}
 }
 
+func TestResolvePathsUsesCommonDirForStateAndGitDirForOperationInWorktree(t *testing.T) {
+	t.Parallel()
+
+	repo := setupGitRepo(t)
+	worktreeDir := filepath.Join(t.TempDir(), "worktree")
+	run(t, repo, "git", "worktree", "add", "-b", "feature/worktree", worktreeDir, "main")
+
+	client := stackgit.NewClient(worktreeDir)
+	stateStore := store.New(client)
+
+	paths, err := stateStore.ResolvePaths(context.Background())
+	if err != nil {
+		t.Fatalf("resolve paths: %v", err)
+	}
+
+	expectedStateFile := normalizePath(t, filepath.Join(repo, ".git", "stack", "state.json"))
+	actualStateFile := normalizePath(t, paths.StateFile)
+	if actualStateFile != expectedStateFile {
+		t.Fatalf("expected shared state file %q, got %q", expectedStateFile, paths.StateFile)
+	}
+
+	if filepath.Dir(paths.OpFile) == filepath.Dir(paths.StateFile) {
+		t.Fatalf("expected worktree op file to differ from shared state path")
+	}
+
+	if filepath.Base(paths.CommonDir) != ".git" {
+		t.Fatalf("expected common dir to point at repo .git, got %q", paths.CommonDir)
+	}
+}
+
 func setupGitRepo(t *testing.T) string {
 	t.Helper()
 
@@ -61,4 +92,9 @@ func run(t *testing.T, dir string, name string, args ...string) {
 	if err != nil {
 		t.Fatalf("%s %v: %v\n%s", name, args, err, string(output))
 	}
+}
+
+func normalizePath(t *testing.T, path string) string {
+	t.Helper()
+	return strings.TrimPrefix(filepath.Clean(path), "/private")
 }
