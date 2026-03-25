@@ -324,7 +324,7 @@ func TestQueueMergesHealthyBottomBranch(t *testing.T) {
 	executeCommand(t, runtime, "queue", "feature/a", "--yes")
 
 	log := readFile(t, ghStub.LogPath)
-	expected := "pr merge 1 --auto --match-head-commit " + head
+	expected := "pr merge 1 --auto --merge --match-head-commit " + head
 	if !strings.Contains(log, expected) {
 		t.Fatalf("expected gh merge log %q, got %q", expected, log)
 	}

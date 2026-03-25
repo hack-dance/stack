@@ -133,6 +133,7 @@ func (c *Client) MergePR(ctx context.Context, number int, headOID string) error 
 		"merge",
 		fmt.Sprintf("%d", number),
 		"--auto",
+		"--merge",
 		"--match-head-commit",
 		headOID,
 	)
