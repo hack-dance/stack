@@ -55,7 +55,7 @@ stack_sandbox_fetch() {
 
 stack_sandbox_remote_head() {
   local branch="$1"
-  git rev-parse "refs/remotes/${STACK_SANDBOX_REMOTE}/${branch}" 2>/dev/null || true
+  git show-ref --hash --verify "refs/remotes/${STACK_SANDBOX_REMOTE}/${branch}" 2>/dev/null || true
 }
 
 stack_sandbox_push_branch() {
