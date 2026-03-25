@@ -5,4 +5,4 @@ coverage.out
 *.test
 *.out
 .vhs/
-
+_docs/

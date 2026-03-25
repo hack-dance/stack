@@ -1,6 +1,6 @@
 # Usage Guide
 
-## Quick start
+## Start a repo
 
 Initialize the repo once:
 
@@ -8,46 +8,59 @@ Initialize the repo once:
 stack init --trunk main --remote origin
 ```
 
-Create or adopt branches:
+Create new stack branches from the current branch:
 
 ```bash
-stack create feature/a
-stack track feature/b --parent feature/a
+stack create feature/base
+stack create feature/child
 ```
 
-Inspect before you mutate:
+Or adopt an existing branch and make the parent explicit:
+
+```bash
+stack track feature/child --parent feature/base
+```
+
+## Inspect first
+
+Use `status` before you mutate anything:
 
 ```bash
 stack status
 stack tui
 ```
 
-## Normal flow
+`stack tui` is a read-only dashboard for browsing the stack tree, branch health,
+and cached PR state.
 
-1. `stack status`
-2. `stack restack` if parent branches moved
-3. `stack submit <branch>` to push and create or update the PR
-4. `stack queue <branch>` only when the branch already targets trunk and is healthy
-5. `stack sync` after merges or GitHub-side base changes
+## The normal loop
 
-## Repair flow
+1. Run `stack status`.
+2. Run `stack restack` if a parent branch moved.
+3. Run `stack submit <branch>` or `stack submit --all` to push and create or update PRs.
+4. Run `stack queue <branch>` only when the bottom branch targets trunk and is healthy.
+5. Run `stack sync` after merges or GitHub-side base changes.
+
+## Repair loop
 
 Use `stack sync` first when local metadata and GitHub disagree.
 
-Use `stack sync --apply` only for clean classified repairs. If the CLI reports a manual-review case, keep it manual.
+Use `stack sync --apply` only for clean repairs. If the CLI reports a
+manual-review case, keep it manual.
 
-If a restack stops for conflicts:
+If a rebase or restack stops for conflicts:
 
 ```bash
 stack continue
 stack abort
 ```
 
-`stack abort` clears the recorded operation and leaves stack metadata on the original parent when the move or restack did not complete.
+`stack abort` clears the recorded operation and leaves stack metadata on the
+clean recovery point.
 
-## Important guardrails
+## Guardrails
 
-- Parents must be trunk or another tracked branch.
-- `move`, `restack`, `submit`, and `queue` all preview before destructive work unless you pass `--yes`.
-- `sync` does not guess ambiguous merged-parent repairs.
-- `queue` only uses `gh`; there is no GraphQL path in this repo.
+- parents must be trunk or another tracked branch
+- `move`, `restack`, `submit`, and `queue` preview before destructive work unless you pass `--yes`
+- `sync` stops on ambiguous merged-parent cases instead of guessing
+- `queue` is only for a healthy bottom-of-stack PR

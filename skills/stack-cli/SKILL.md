@@ -1,6 +1,6 @@
 ---
 name: stack-cli
-description: Use for the `stack` GitHub stacked-PR CLI. Covers safe init, track, create, status, restack, submit, sync, move, and queue workflows with preview-first, repairable operations and no GraphQL.
+description: Use for the `stack` GitHub stacked-PR CLI. Covers safe init, track, create, status, restack, submit, sync, move, and queue workflows with preview-first, repairable operations on ordinary branches and PRs.
 ---
 
 # stack CLI
@@ -12,7 +12,7 @@ Use this skill when helping someone operate the `stack` CLI safely.
 - Prefer `stack status` first when the repo state is unclear.
 - Treat stack metadata as the source of truth; use `sync` to refresh GitHub-backed state.
 - Keep write flows previewable and repairable. If a command can be checked before mutation, do that.
-- Use `git` and `gh` only. Do not suggest GraphQL or backend shortcuts.
+- Use `git` and `gh` for the repository and PR operations around `stack`.
 - When a command offers confirmation or `--yes`, assume the safer preview path unless the user explicitly wants unattended execution.
 - Stop on ambiguity. Do not guess parentage, merge bases, or repair actions when the CLI surfaces a manual-review case.
 
@@ -35,10 +35,9 @@ Use this skill when helping someone operate the `stack` CLI safely.
 - Start with `stack status` or `stack status --json` to understand the graph and current drift.
 - Use `stack init` once per repo before tracking branches.
 - Use `stack create` for new stack branches and `stack track` for existing ones; always make the parent explicit.
-- Before restack-heavy work, confirm the recorded anchor exists and the branch is tracked.
 - Prefer `stack submit` before `stack queue`; queue handoff expects a fresh push, matching PR base, and matching head commit.
 - Use `stack sync` after merges or PR changes to reconcile local metadata with GitHub.
-- Use `stack sync --apply` only for clean, classified repairs. If the tool marks a case as ambiguous or manual review, keep it manual.
+- Use `stack sync --apply` only for clean repairs. If the tool marks a case as ambiguous or manual review, keep it manual.
 
 ## Repair loop
 
@@ -61,7 +60,6 @@ If a restack stops mid-flight, use `stack continue` from the same worktree after
 
 ## What to avoid
 
-- Do not recommend GraphQL-based workflows.
 - Do not bypass stack metadata with direct remote mutations unless the user explicitly wants a manual repair step.
 - Do not override the CLI’s manual-review cases with guesses.
 - Do not present `stack tui` as an edit surface; it is read-only.
