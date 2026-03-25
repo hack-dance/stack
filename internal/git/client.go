@@ -142,7 +142,10 @@ func (c *Client) RebaseOnto(ctx context.Context, parent string, oldParentHead st
 }
 
 func (c *Client) RebaseContinue(ctx context.Context) error {
-	_, err := c.run(ctx, "rebase", "--continue")
+	_, err := c.runWithEnv(ctx, []string{
+		"GIT_EDITOR=true",
+		"GIT_SEQUENCE_EDITOR=true",
+	}, "rebase", "--continue")
 	return err
 }
 
@@ -202,8 +205,14 @@ func (c *Client) output(ctx context.Context, args ...string) (string, error) {
 }
 
 func (c *Client) run(ctx context.Context, args ...string) (string, error) {
+	return c.runWithEnv(ctx, nil, args...)
+}
+
+func (c *Client) runWithEnv(ctx context.Context, env []string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = c.cwd
+	cmd.Env = os.Environ()
+	cmd.Env = append(cmd.Env, env...)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

@@ -84,6 +84,48 @@ func TestIsAncestorReturnsFalseForSiblingCommits(t *testing.T) {
 	}
 }
 
+func TestRebaseContinueDoesNotRequireInteractiveEditor(t *testing.T) {
+	repo := setupGitRepo(t)
+	baseOID := strings.TrimSpace(runOutput(t, repo, "git", "rev-parse", "HEAD"))
+
+	run(t, repo, "git", "switch", "-c", "feature/a")
+	writeFile(t, filepath.Join(repo, "shared.txt"), "feature branch\n")
+	run(t, repo, "git", "add", "shared.txt")
+	run(t, repo, "git", "commit", "-m", "feature change")
+
+	run(t, repo, "git", "switch", "main")
+	writeFile(t, filepath.Join(repo, "shared.txt"), "main branch\n")
+	run(t, repo, "git", "add", "shared.txt")
+	run(t, repo, "git", "commit", "-m", "main change")
+
+	client := stackgit.NewClient(repo)
+	err := client.RebaseOnto(context.Background(), "main", baseOID, "feature/a")
+	if err == nil {
+		t.Fatalf("expected rebase conflict")
+	}
+
+	writeFile(t, filepath.Join(repo, "shared.txt"), "resolved during test\n")
+	run(t, repo, "git", "add", "shared.txt")
+	t.Setenv("GIT_EDITOR", "false")
+
+	if err := client.RebaseContinue(context.Background()); err != nil {
+		t.Fatalf("rebase continue: %v", err)
+	}
+
+	inProgress, err := client.RebaseInProgress(context.Background())
+	if err != nil {
+		t.Fatalf("rebase in progress: %v", err)
+	}
+	if inProgress {
+		t.Fatalf("expected rebase to be complete")
+	}
+
+	content := runOutput(t, repo, "git", "show", "HEAD:shared.txt")
+	if strings.TrimSpace(content) != "resolved during test" {
+		t.Fatalf("unexpected rebased content: %q", content)
+	}
+}
+
 func setupGitRepo(t *testing.T) string {
 	t.Helper()
 
