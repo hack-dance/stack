@@ -95,9 +95,21 @@ func TestSyncApplyReparentsCleanMergedParent(t *testing.T) {
       "lastSeenBaseOid": "",
       "state": "MERGED",
       "isDraft": false
+    },
+    "2": {
+      "id": "PR_2",
+      "number": 2,
+      "url": "https://example.com/hack-dance/stack/pull/2",
+      "repo": "hack-dance/stack",
+      "headRefName": "feature/b",
+      "baseRefName": "feature/a",
+      "lastSeenHeadOid": "",
+      "lastSeenBaseOid": "",
+      "state": "OPEN",
+      "isDraft": false
     }
   },
-  "next_number": 2
+  "next_number": 3
 }`)
 
 	executeCommand(t, runtime, "sync", "--apply")
@@ -108,6 +120,14 @@ func TestSyncApplyReparentsCleanMergedParent(t *testing.T) {
 	}
 	if got := state.Branches["feature/b"].ParentBranch; got != "main" {
 		t.Fatalf("expected feature/b parent to be main, got %q", got)
+	}
+	if got := state.Branches["feature/b"].PR.BaseRefName; got != "main" {
+		t.Fatalf("expected feature/b PR base to be main, got %q", got)
+	}
+
+	log := readFile(t, ghStub.LogPath)
+	if !strings.Contains(log, "pr edit 2 --base main") {
+		t.Fatalf("expected child PR retarget, got %q", log)
 	}
 
 	_ = repo
@@ -164,9 +184,21 @@ func TestSyncApplySkipsAmbiguousMergedParent(t *testing.T) {
       "lastSeenBaseOid": "",
       "state": "MERGED",
       "isDraft": false
+    },
+    "2": {
+      "id": "PR_2",
+      "number": 2,
+      "url": "https://example.com/hack-dance/stack/pull/2",
+      "repo": "hack-dance/stack",
+      "headRefName": "feature/b",
+      "baseRefName": "feature/a",
+      "lastSeenHeadOid": "",
+      "lastSeenBaseOid": "",
+      "state": "OPEN",
+      "isDraft": false
     }
   },
-  "next_number": 2
+  "next_number": 3
 }`)
 
 	executeCommand(t, runtime, "sync", "--apply")
@@ -177,6 +209,11 @@ func TestSyncApplySkipsAmbiguousMergedParent(t *testing.T) {
 	}
 	if got := state.Branches["feature/b"].ParentBranch; got != "feature/a" {
 		t.Fatalf("expected feature/b parent to stay feature/a, got %q", got)
+	}
+
+	log := readFile(t, ghStub.LogPath)
+	if strings.Contains(log, "pr edit 2 --base main") {
+		t.Fatalf("expected no child PR retarget for ambiguous merged parent, got %q", log)
 	}
 }
 
@@ -412,6 +449,12 @@ func setupTrackedStackRepo(t *testing.T) (string, *stackruntime.Runtime, string)
 			"feature/b": {
 				ParentBranch: "feature/a",
 				RemoteName:   "origin",
+				PR: store.PullRequest{
+					Number:      2,
+					HeadRefName: "feature/b",
+					BaseRefName: "feature/a",
+					State:       "OPEN",
+				},
 				Restack: store.RestackMetadata{
 					LastParentHeadOID: featureAHead,
 				},

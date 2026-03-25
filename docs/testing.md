@@ -88,6 +88,7 @@ Run the destructive end-to-end scenarios in a temp clone:
 
 ```bash
 scripts/sandbox/run-live-queue.sh
+scripts/sandbox/run-live-sync.sh
 scripts/sandbox/run-live-conflict.sh
 ```
 
@@ -97,6 +98,10 @@ These scripts intentionally mutate the live sandbox repo, then reseed the consum
   - verifies `stack submit` can refresh a real PR
   - verifies `stack queue` works against GitHub with `gh pr merge --auto --merge --match-head-commit`
   - verifies the queue fixture can be reseeded after the PR is merged
+- `run-live-sync.sh`
+  - verifies `stack sync --apply` reparents a clean child after its parent PR is merged
+  - verifies the child PR base is retargeted on GitHub
+  - verifies ambiguous merged-parent cases stop for manual review instead of mutating child metadata or PR base
 - `run-live-conflict.sh`
   - verifies a real parent restack conflict after trunk drift
   - verifies `stack continue` can finish a resolved rebase without an interactive editor
@@ -127,6 +132,7 @@ mise exec -- go test ./...
 mise exec -- go build ./...
 scripts/sandbox/seed-fixtures.sh
 scripts/sandbox/run-live-queue.sh
+scripts/sandbox/run-live-sync.sh
 scripts/sandbox/run-live-conflict.sh
 scripts/sandbox/report-fixtures.sh
 ```
