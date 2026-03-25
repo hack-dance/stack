@@ -64,6 +64,7 @@ mise exec -- go run ./tools/gendocs
 
 - install and source build instructions: [docs/install.md](docs/install.md)
 - everyday workflows and repair loops: [docs/usage.md](docs/usage.md)
+- common operator failures and repair paths: [docs/troubleshooting.md](docs/troubleshooting.md)
 - release automation and maintainer notes: [docs/releasing.md](docs/releasing.md)
 - generated command reference: [docs/cli/stack.md](docs/cli/stack.md)
 
