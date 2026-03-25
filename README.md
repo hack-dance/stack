@@ -34,8 +34,7 @@ drift clearly, and favors repairable workflows over hidden automation.
 
 ## Current Caveats
 
-- restack and sync safety are implemented, but still need deeper fixture coverage
-- GitHub sandbox coverage for submit, sync, and queue still needs expansion
+- restack, queue, and crash recovery now have live sandbox verification, but `sync` and merged-parent repair still need broader live coverage
 - the TUI is intentionally read-only in the current alpha
 - ambiguous merged-parent repair cases stop for review instead of guessing
 

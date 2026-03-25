@@ -93,6 +93,16 @@ scripts/sandbox/run-live-conflict.sh
 
 These scripts intentionally mutate the live sandbox repo, then reseed the consumed fixtures so the next run starts from a known state.
 
+- `run-live-queue.sh`
+  - verifies `stack submit` can refresh a real PR
+  - verifies `stack queue` works against GitHub with `gh pr merge --auto --merge --match-head-commit`
+  - verifies the queue fixture can be reseeded after the PR is merged
+- `run-live-conflict.sh`
+  - verifies a real parent restack conflict after trunk drift
+  - verifies `stack continue` can finish a resolved rebase without an interactive editor
+  - verifies a second child conflict and recovery cycle after the parent moves
+  - verifies the sandbox can be reseeded after those destructive checks
+
 Optional environment:
 
 - `STACK_GITHUB_SANDBOX_REPO_ROOT`
