@@ -821,6 +821,103 @@ func TestSubmitCreatesAndTracksPR(t *testing.T) {
 	}
 }
 
+func TestCreateRejectsDetachedHEAD(t *testing.T) {
+	repo := testutil.SetupGitRepo(t)
+	testutil.Run(t, repo, "git", "checkout", "--detach")
+
+	runtime := newTestRuntime(repo)
+	state := store.RepoState{
+		Version:       1,
+		Repo:          "hack-dance/stack",
+		DefaultRemote: "origin",
+		Trunk:         "main",
+		Branches:      map[string]store.BranchRecord{},
+	}
+	if err := runtime.Store.WriteState(runtime.Context, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	err := executeCommandExpectError(runtime, "create", "feature/a")
+	if err == nil || !strings.Contains(err.Error(), "detached HEAD") {
+		t.Fatalf("expected detached HEAD error, got %v", err)
+	}
+
+	state, err = runtime.Store.ReadState(runtime.Context)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if len(state.Branches) != 0 {
+		t.Fatalf("expected no tracked branches, got %+v", state.Branches)
+	}
+	if runtime.Git.BranchExists(runtime.Context, "feature/a") {
+		t.Fatalf("expected feature/a branch to not be created")
+	}
+}
+
+func TestCreateRejectsUntrackedCurrentParent(t *testing.T) {
+	repo := testutil.SetupGitRepo(t)
+	testutil.Run(t, repo, "git", "switch", "-c", "feature/base")
+
+	runtime := newTestRuntime(repo)
+	state := store.RepoState{
+		Version:       1,
+		Repo:          "hack-dance/stack",
+		DefaultRemote: "origin",
+		Trunk:         "main",
+		Branches:      map[string]store.BranchRecord{},
+	}
+	if err := runtime.Store.WriteState(runtime.Context, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	err := executeCommandExpectError(runtime, "create", "feature/child")
+	if err == nil || !strings.Contains(err.Error(), "not tracked in local metadata") {
+		t.Fatalf("expected untracked parent error, got %v", err)
+	}
+
+	state, err = runtime.Store.ReadState(runtime.Context)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if len(state.Branches) != 0 {
+		t.Fatalf("expected no tracked branches, got %+v", state.Branches)
+	}
+	if runtime.Git.BranchExists(runtime.Context, "feature/child") {
+		t.Fatalf("expected feature/child branch to not be created")
+	}
+}
+
+func TestTrackRejectsUntrackedParent(t *testing.T) {
+	repo := testutil.SetupGitRepo(t)
+	testutil.Run(t, repo, "git", "switch", "-c", "feature/base")
+	testutil.Run(t, repo, "git", "switch", "-c", "feature/child")
+
+	runtime := newTestRuntime(repo)
+	state := store.RepoState{
+		Version:       1,
+		Repo:          "hack-dance/stack",
+		DefaultRemote: "origin",
+		Trunk:         "main",
+		Branches:      map[string]store.BranchRecord{},
+	}
+	if err := runtime.Store.WriteState(runtime.Context, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	err := executeCommandExpectError(runtime, "track", "feature/child", "--parent", "feature/base")
+	if err == nil || !strings.Contains(err.Error(), "parent branch \"feature/base\" is not tracked in local metadata") {
+		t.Fatalf("expected untracked parent error, got %v", err)
+	}
+
+	state, err = runtime.Store.ReadState(runtime.Context)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if len(state.Branches) != 0 {
+		t.Fatalf("expected no tracked branches, got %+v", state.Branches)
+	}
+}
+
 func TestVersionCommandPrintsBuildInfo(t *testing.T) {
 	repo := testutil.SetupGitRepo(t)
 	runtime := newTestRuntime(repo)

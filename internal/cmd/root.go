@@ -153,6 +153,9 @@ func newCreateCommand(runtime *stackruntime.Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := ensureCreateParentAllowed(state, parent); err != nil {
+				return err
+			}
 
 			if err := runtime.Git.SwitchCreate(runtime.Context, args[0]); err != nil {
 				return err
@@ -210,6 +213,9 @@ func newTrackCommand(runtime *stackruntime.Runtime) *cobra.Command {
 
 			if parent != state.Trunk && !runtime.Git.BranchExists(runtime.Context, parent) {
 				return fmt.Errorf("parent branch %q does not exist locally", parent)
+			}
+			if err := ensureTrackedParentAllowed(state, parent); err != nil {
+				return err
 			}
 			if err := stack.EnsureBranchCanParent(state, branch, parent); err != nil {
 				return err
@@ -463,10 +469,8 @@ stack move feature/b --parent main --yes
 			if !runtime.Git.BranchExists(runtime.Context, parent) && parent != state.Trunk {
 				return fmt.Errorf("parent branch %q does not exist locally", parent)
 			}
-			if parent != state.Trunk {
-				if _, ok := state.Branches[parent]; !ok {
-					return fmt.Errorf("parent branch %q is not tracked in local metadata; track it first or move under %s", parent, state.Trunk)
-				}
+			if err := ensureTrackedParentAllowed(state, parent); err != nil {
+				return err
 			}
 			if err := stack.EnsureBranchCanParent(state, branch, parent); err != nil {
 				return err
@@ -1320,6 +1324,31 @@ func validateTrackedPR(branch string, record store.BranchRecord) error {
 		return fmt.Errorf("tracked PR for %q points at head %q", branch, record.PR.HeadRefName)
 	}
 	return nil
+}
+
+func ensureCreateParentAllowed(state store.RepoState, parent string) error {
+	parent = strings.TrimSpace(parent)
+	if parent == "" {
+		return fmt.Errorf("cannot create a tracked branch from detached HEAD; switch to %s or another tracked branch first", state.Trunk)
+	}
+	if parent == state.Trunk {
+		return nil
+	}
+	if _, ok := state.Branches[parent]; ok {
+		return nil
+	}
+	return fmt.Errorf("current branch %q is not tracked in local metadata; track it first or switch to %s", parent, state.Trunk)
+}
+
+func ensureTrackedParentAllowed(state store.RepoState, parent string) error {
+	parent = strings.TrimSpace(parent)
+	if parent == "" || parent == state.Trunk {
+		return nil
+	}
+	if _, ok := state.Branches[parent]; ok {
+		return nil
+	}
+	return fmt.Errorf("parent branch %q is not tracked in local metadata; track it first or move under %s", parent, state.Trunk)
 }
 
 func resolveOID(runtime *stackruntime.Runtime, ref string) string {

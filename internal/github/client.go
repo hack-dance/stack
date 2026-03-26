@@ -94,7 +94,25 @@ func (c *Client) FindPRByHead(ctx context.Context, branch string) (store.PullReq
 		return store.PullRequest{}, nil
 	}
 
-	return payload[0].toStorePullRequest(), nil
+	open := make([]pullRequestPayload, 0, len(payload))
+	for _, pr := range payload {
+		if pr.State == "OPEN" {
+			open = append(open, pr)
+		}
+	}
+
+	switch len(open) {
+	case 0:
+		return store.PullRequest{}, nil
+	case 1:
+		return open[0].toStorePullRequest(), nil
+	default:
+		numbers := make([]string, 0, len(open))
+		for _, pr := range open {
+			numbers = append(numbers, fmt.Sprintf("#%d", pr.Number))
+		}
+		return store.PullRequest{}, fmt.Errorf("multiple open pull requests match head %q: %s", branch, strings.Join(numbers, ", "))
+	}
 }
 
 func (c *Client) CreatePR(ctx context.Context, base string, head string, title string, body string, draft bool) (store.PullRequest, error) {

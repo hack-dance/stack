@@ -72,6 +72,7 @@ Then choose a repair path deliberately.
 Check:
 
 - `gh auth status`
+- GitHub repository auto-merge is enabled
 - the branch is pushed to the expected remote
 - the tracked PR is open and on the expected base
 - the local head still matches the pushed head
@@ -82,6 +83,10 @@ When queue handoff reports stale state, resubmit first:
 stack submit <branch>
 stack queue <branch>
 ```
+
+If the CLI reports multiple open PRs for one head branch, it is refusing to
+guess which live PR owns that branch. Close or retarget the duplicate until one
+open PR remains for that head name, then rerun `stack submit`.
 
 ## Release automation does not update the tap
 
