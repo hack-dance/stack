@@ -1,4 +1,4 @@
 conflict scenario
-owner: sandbox-trunk-drift
-resolution: trunk drift version
-marker: 44caee2
+owner: sandbox-conflict-base
+resolution: parent branch version
+marker: 00e3fde
