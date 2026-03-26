@@ -73,6 +73,11 @@ stack track feature/runtime --parent feature/parser
 stack track feature/ui --parent feature/runtime
 ```
 
+When the parent branch has moved since a child branch was originally cut,
+`stack track` records a merge-base-style restack anchor instead of blindly
+assuming the current parent tip. That makes stale existing PR heads adoptable
+without breaking the first `stack restack`.
+
 If the first parent chain is wrong, that is fine. Get a draft graph in place
 first.
 

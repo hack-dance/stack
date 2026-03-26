@@ -918,6 +918,79 @@ func TestTrackRejectsUntrackedParent(t *testing.T) {
 	}
 }
 
+func TestTrackUsesMergeBaseAnchorForStaleAdoption(t *testing.T) {
+	repo := testutil.SetupGitRepo(t)
+
+	testutil.Run(t, repo, "git", "switch", "-c", "feature/base")
+	testutil.WriteFile(t, filepath.Join(repo, "feature-base.txt"), "feature base\n")
+	testutil.Run(t, repo, "git", "add", "feature-base.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "add feature base")
+	originalFeatureBaseHead := strings.TrimSpace(testutil.Run(t, repo, "git", "rev-parse", "HEAD"))
+
+	testutil.Run(t, repo, "git", "switch", "-c", "feature/child")
+	testutil.WriteFile(t, filepath.Join(repo, "feature-child.txt"), "feature child\n")
+	testutil.Run(t, repo, "git", "add", "feature-child.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "add feature child")
+	originalFeatureChildHead := strings.TrimSpace(testutil.Run(t, repo, "git", "rev-parse", "HEAD"))
+
+	testutil.Run(t, repo, "git", "switch", "feature/base")
+	testutil.WriteFile(t, filepath.Join(repo, "feature-base.txt"), "feature base advanced\n")
+	testutil.Run(t, repo, "git", "add", "feature-base.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "advance feature base")
+	advancedFeatureBaseHead := strings.TrimSpace(testutil.Run(t, repo, "git", "rev-parse", "HEAD"))
+
+	runtime := newTestRuntime(repo)
+	mainHead, err := runtime.Git.ResolveRef(runtime.Context, "main")
+	if err != nil {
+		t.Fatalf("resolve main head: %v", err)
+	}
+	state := store.RepoState{
+		Version:       1,
+		Repo:          "hack-dance/stack",
+		DefaultRemote: "origin",
+		Trunk:         "main",
+		Branches:      map[string]store.BranchRecord{},
+	}
+	if err := runtime.Store.WriteState(runtime.Context, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	executeCommand(t, runtime, "track", "feature/base", "--parent", "main")
+	executeCommand(t, runtime, "track", "feature/child", "--parent", "feature/base")
+
+	state, err = runtime.Store.ReadState(runtime.Context)
+	if err != nil {
+		t.Fatalf("read state after track: %v", err)
+	}
+	if got := state.Branches["feature/base"].Restack.LastParentHeadOID; got != mainHead {
+		t.Fatalf("expected feature/base anchor %q, got %q", mainHead, got)
+	}
+	if got := state.Branches["feature/child"].Restack.LastParentHeadOID; got != originalFeatureBaseHead {
+		t.Fatalf("expected feature/child merge-base anchor %q, got %q", originalFeatureBaseHead, got)
+	}
+	if originalFeatureBaseHead == advancedFeatureBaseHead {
+		t.Fatalf("expected feature/base head to advance")
+	}
+
+	executeCommand(t, runtime, "restack", "--all", "--yes")
+
+	state, err = runtime.Store.ReadState(runtime.Context)
+	if err != nil {
+		t.Fatalf("read state after restack: %v", err)
+	}
+	if got := state.Branches["feature/child"].Restack.LastParentHeadOID; got != advancedFeatureBaseHead {
+		t.Fatalf("expected feature/child anchor to update to %q, got %q", advancedFeatureBaseHead, got)
+	}
+	if got := strings.TrimSpace(testutil.Run(t, repo, "git", "rev-parse", "feature/child")); got == originalFeatureChildHead {
+		t.Fatalf("expected feature/child head to change after restack")
+	}
+
+	mergeBase := strings.TrimSpace(testutil.Run(t, repo, "git", "merge-base", "feature/base", "feature/child"))
+	if mergeBase != advancedFeatureBaseHead {
+		t.Fatalf("expected feature/child merge-base %q after restack, got %q", advancedFeatureBaseHead, mergeBase)
+	}
+}
+
 func TestVersionCommandPrintsBuildInfo(t *testing.T) {
 	repo := testutil.SetupGitRepo(t)
 	runtime := newTestRuntime(repo)

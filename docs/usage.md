@@ -21,6 +21,10 @@ Or adopt an existing branch and make the parent explicit:
 stack track feature/child --parent feature/base
 ```
 
+If the branch is stale and `feature/base` has moved since it was cut, `track`
+records a repairable restack anchor from shared history instead of the current
+parent tip.
+
 If you already have a larger set of open PRs and want to turn them into an
 explicit stack after the fact, use
 [adopting-existing-prs.md](adopting-existing-prs.md).
