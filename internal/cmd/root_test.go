@@ -2171,6 +2171,77 @@ func TestSupersedeRecordsMetadataAndCommentsOriginalPRs(t *testing.T) {
 	}
 }
 
+func TestSupersedeRejectsPRsOutsideLandingSourceBranches(t *testing.T) {
+	repo := testutil.SetupGitRepo(t)
+	testutil.Run(t, repo, "git", "switch", "-c", "stack/discovery-core")
+	testutil.WriteFile(t, filepath.Join(repo, "landing.txt"), "landing\n")
+	testutil.Run(t, repo, "git", "add", "landing.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "landing")
+	landingHead := strings.TrimSpace(testutil.Run(t, repo, "git", "rev-parse", "HEAD"))
+
+	runtime := newTestRuntime(repo)
+	state := store.RepoState{
+		Version:       1,
+		Repo:          "hack-dance/stack",
+		DefaultRemote: "origin",
+		Trunk:         "main",
+		Branches:      map[string]store.BranchRecord{},
+		Landings: map[string]store.LandingRecord{
+			"stack/discovery-core": {
+				BaseBranch:     "main",
+				SourceBranches: []string{"hack-agent/lnhack-66-feature-a", "hack-agent/lnhack-67-feature-b"},
+				CreatedAt:      "2026-03-26T19:00:00Z",
+			},
+		},
+	}
+	if err := runtime.Store.WriteState(runtime.Context, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	ghStub := testutil.SetupGHStub(t, "hack-dance/stack", "main")
+	t.Setenv("STACK_TEST_GH_STATE", ghStub.StatePath)
+	t.Setenv("STACK_TEST_GH_LOG", ghStub.LogPath)
+	t.Setenv("PATH", ghStub.Dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	writeGHState(t, ghStub.StatePath, `{
+  "repo": {
+    "nameWithOwner": "hack-dance/stack",
+    "url": "https://github.com/hack-dance/stack",
+    "defaultBranchRef": { "name": "main" }
+  },
+  "prs": {
+    "3": {
+      "id": "PR_3",
+      "number": 3,
+      "url": "https://example.com/hack-dance/stack/pull/3",
+      "repo": "hack-dance/stack",
+      "headRefName": "hack-agent/unrelated-follow-up",
+      "baseRefName": "main",
+      "headRefOid": "",
+      "state": "OPEN",
+      "isDraft": false
+    },
+    "9": {
+      "id": "PR_9",
+      "number": 9,
+      "url": "https://example.com/hack-dance/stack/pull/9",
+      "repo": "hack-dance/stack",
+      "headRefName": "stack/discovery-core",
+      "baseRefName": "main",
+      "headRefOid": "`+landingHead+`",
+      "state": "OPEN",
+      "isDraft": false
+    }
+  },
+  "next_number": 10
+}`)
+
+	err := executeCommandExpectError(runtime, "supersede", "--landing", "stack/discovery-core", "--prs", "3", "--no-comment", "--yes")
+	if err == nil || !strings.Contains(err.Error(), `pull request #3 head "hack-agent/unrelated-follow-up" is not part of landing batch "stack/discovery-core"`) {
+		t.Fatalf("expected supersede source-branch validation error, got %v", err)
+	}
+}
+
 func TestVerifyAddAndListForTrackedBranch(t *testing.T) {
 	repo := testutil.SetupGitRepo(t)
 

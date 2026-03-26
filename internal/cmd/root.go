@@ -2093,6 +2093,10 @@ func buildSupersedePlan(runtime *stackruntime.Runtime, state store.RepoState, la
 		LandingPR:     landingPRs[0],
 		SupersededPRs: make([]store.PullRequest, 0, len(prNumbers)),
 	}
+	sourceBranches := map[string]bool{}
+	for _, branch := range landing.SourceBranches {
+		sourceBranches[branch] = true
+	}
 
 	for _, number := range prNumbers {
 		if number == plan.LandingPR.Number {
@@ -2101,6 +2105,9 @@ func buildSupersedePlan(runtime *stackruntime.Runtime, state store.RepoState, la
 		pr, err := runtime.GitHub.ViewPR(runtime.Context, number)
 		if err != nil {
 			return supersedePlan{}, err
+		}
+		if !sourceBranches[pr.HeadRefName] {
+			return supersedePlan{}, fmt.Errorf("pull request #%d head %q is not part of landing batch %q; expected one of: %s", pr.Number, pr.HeadRefName, landingBranch, strings.Join(landing.SourceBranches, ", "))
 		}
 		plan.SupersededPRs = append(plan.SupersededPRs, pr)
 	}
