@@ -897,7 +897,7 @@ stack supersede --landing stack/discovery-core --prs 353 --prs 354 --no-comment 
 	cmd.Flags().StringVar(&landingBranch, "landing", "", "Landing branch to use as the superseding target")
 	cmd.Flags().StringArrayVar(&prValues, "prs", nil, "Original PR numbers, comma-separated or repeated")
 	cmd.Flags().BoolVar(&noComment, "no-comment", false, "Record superseded linkage locally without posting GitHub comments")
-	cmd.Flags().BoolVar(&closeAfterMerge, "close-after-merge", false, "Mark superseded PRs to be closed by `stack closeout --apply` after the landing PR merges")
+	cmd.Flags().BoolVar(&closeAfterMerge, "close-after-merge", false, "Mark superseded PRs for later closure during closeout apply after the landing PR merges")
 	cmd.Flags().BoolVar(&yes, "yes", false, "Skip confirmation")
 	return cmd
 }

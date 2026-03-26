@@ -1,5 +1,11 @@
 # Landing workflow follow-ups
 
+This is a historical design note from before the landing-orchestration work was
+implemented. Many of the follow-ups in this document now exist in the CLI.
+
+For the current operator-facing workflow, use
+[landing-workflow.md](landing-workflow.md).
+
 This document captures the next layer of work that became obvious while using
 `stack` to turn a pile of existing PRs into one verified landing PR in
 `TeamSidewinder/event-agent`.
@@ -258,4 +264,3 @@ The tool should help an operator say:
 - “these are the tickets safe to close after deploy”
 
 without requiring a separate spreadsheet or a memory-heavy manual ritual.
-
