@@ -1,4 +1,4 @@
 conflict scenario
-owner: sandbox-conflict-base
-resolution: parent branch version
-marker: 00e3fde
+owner: sandbox-conflict-child
+resolution: child branch version
+marker: 985bb77
