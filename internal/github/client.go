@@ -154,6 +154,24 @@ func (c *Client) EditPRBase(ctx context.Context, number int, base string) error 
 	return err
 }
 
+func (c *Client) EditPR(ctx context.Context, number int, base string, title string, body string) error {
+	args := []string{"pr", "edit", fmt.Sprintf("%d", number)}
+	if strings.TrimSpace(base) != "" {
+		args = append(args, "--base", base)
+	}
+	if strings.TrimSpace(title) != "" {
+		args = append(args, "--title", title)
+	}
+	if strings.TrimSpace(body) != "" {
+		args = append(args, "--body", body)
+	}
+	if len(args) == 3 {
+		return nil
+	}
+	_, err := c.run(ctx, args...)
+	return err
+}
+
 func (c *Client) MergePR(ctx context.Context, number int, headOID string, strategy string) error {
 	strategyFlag := "--merge"
 	switch strategy {
@@ -180,6 +198,15 @@ func (c *Client) MergePR(ctx context.Context, number int, headOID string, strate
 
 func (c *Client) CommentPR(ctx context.Context, number int, body string) error {
 	_, err := c.run(ctx, "pr", "comment", fmt.Sprintf("%d", number), "--body", body)
+	return err
+}
+
+func (c *Client) ClosePR(ctx context.Context, number int, comment string) error {
+	args := []string{"pr", "close", fmt.Sprintf("%d", number)}
+	if strings.TrimSpace(comment) != "" {
+		args = append(args, "--comment", comment)
+	}
+	_, err := c.run(ctx, args...)
 	return err
 }
 

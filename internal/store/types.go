@@ -47,11 +47,14 @@ type VerificationRecord struct {
 }
 
 type LandingRecord struct {
-	BaseBranch     string   `json:"baseBranch"`
-	SourceBranches []string `json:"sourceBranches"`
-	SupersededPRs  []int    `json:"supersededPrs,omitempty"`
-	SupersededAt   string   `json:"supersededAt,omitempty"`
-	CreatedAt      string   `json:"createdAt"`
+	BaseBranch                string   `json:"baseBranch"`
+	SourceBranches            []string `json:"sourceBranches"`
+	Tickets                   []string `json:"tickets,omitempty"`
+	LandingPRNumber           int      `json:"landingPrNumber,omitempty"`
+	SupersededPRs             []int    `json:"supersededPrs,omitempty"`
+	CloseSupersededAfterMerge bool     `json:"closeSupersededAfterMerge,omitempty"`
+	SupersededAt              string   `json:"supersededAt,omitempty"`
+	CreatedAt                 string   `json:"createdAt"`
 }
 
 type OperationState struct {

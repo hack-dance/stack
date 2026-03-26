@@ -24,11 +24,12 @@ stack supersede --landing stack/discovery-core --prs 353 --prs 354 --no-comment 
 ### Options
 
 ```
-  -h, --help              help for supersede
-      --landing string    Landing branch to use as the superseding target
-      --no-comment        Record superseded linkage locally without posting GitHub comments
-      --prs stringArray   Original PR numbers, comma-separated or repeated
-      --yes               Skip confirmation
+      --close-after-merge stack closeout --apply   Mark superseded PRs to be closed by stack closeout --apply after the landing PR merges
+  -h, --help                                       help for supersede
+      --landing string                             Landing branch to use as the superseding target
+      --no-comment                                 Record superseded linkage locally without posting GitHub comments
+      --prs stringArray                            Original PR numbers, comma-separated or repeated
+      --yes                                        Skip confirmation
 ```
 
 ### SEE ALSO

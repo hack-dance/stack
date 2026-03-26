@@ -8,7 +8,7 @@ Plan read-only post-merge closeout for a landing branch
 
 ### Synopsis
 
-Use recorded landing composition, pull request state, and verification records to show which original PRs and inferred tickets are safe to close now versus still blocked on deploy checks.
+Use recorded landing composition, pull request state, and verification records to show which original PRs and explicit tickets are safe to close now versus still blocked on deploy checks.
 
 ```
 stack closeout <landing-branch> [flags]
@@ -18,12 +18,15 @@ stack closeout <landing-branch> [flags]
 
 ```
 stack closeout stack/discovery-core
+stack closeout stack/discovery-core --apply --yes
 ```
 
 ### Options
 
 ```
-  -h, --help   help for closeout
+      --apply   Close superseded PRs that are explicitly marked safe to close after landing merge
+  -h, --help    help for closeout
+      --yes     Skip confirmation when used with --apply
 ```
 
 ### SEE ALSO

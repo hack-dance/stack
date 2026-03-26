@@ -410,6 +410,11 @@ func newComposeCommand(runtime *stackruntime.Runtime) *cobra.Command {
 	var branches []string
 	var from string
 	var to string
+	var ticketValues []string
+	var openPR bool
+	var draft bool
+	var title string
+	var body string
 	var yes bool
 
 	cmd := &cobra.Command{
@@ -418,6 +423,7 @@ func newComposeCommand(runtime *stackruntime.Runtime) *cobra.Command {
 		Long:  "Create one ordinary local landing branch from an explicit linear branch selection and replay only the selected commits in order.",
 		Example: strings.TrimSpace(`
 stack compose discovery-core --from feature/a --to feature/c
+stack compose discovery-core --from feature/a --to feature/c --ticket LNHACK-66 --ticket LNHACK-67 --open-pr
 stack compose discovery-core --branches feature/a --branches feature/b --yes
 		`),
 		Args: cobra.ExactArgs(1),
@@ -437,16 +443,40 @@ stack compose discovery-core --branches feature/a --branches feature/b --yes
 			if err != nil {
 				return err
 			}
+			tickets, err := parseTicketRefs(ticketValues)
+			if err != nil {
+				return err
+			}
 
 			plan, err := buildComposePlan(runtime, state, composeDestinationBranch(args[0]), selectedBranches)
 			if err != nil {
 				return err
 			}
 
-			_, _ = fmt.Fprintln(cmd.OutOrStdout(), ui.RenderPreview("Compose preview", renderComposePreview(plan)))
+			preview := renderComposePreview(plan)
+			if len(tickets) > 0 {
+				preview = append(preview, fmt.Sprintf("tickets: %s", strings.Join(tickets, ", ")))
+			}
+			if openPR {
+				preview = append(preview, "push landing branch and open or refresh landing PR")
+				if strings.TrimSpace(title) != "" {
+					preview = append(preview, fmt.Sprintf("pr title: %q", strings.TrimSpace(title)))
+				}
+				if strings.TrimSpace(body) != "" {
+					preview = append(preview, "pr body: explicit command value")
+				}
+				if draft {
+					preview = append(preview, "pr draft: true")
+				}
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), ui.RenderPreview("Compose preview", preview))
 
 			if !yes {
-				confirmed, err := forms.Confirm("Compose landing branch", "This creates a new local branch and cherry-picks the selected commits onto trunk.")
+				confirmText := "This creates a new local branch and cherry-picks the selected commits onto trunk."
+				if openPR {
+					confirmText = "This creates a new local branch, cherry-picks the selected commits onto trunk, pushes the landing branch, and may create or edit a GitHub PR."
+				}
+				confirmed, err := forms.Confirm("Compose landing branch", confirmText)
 				if err != nil {
 					return err
 				}
@@ -467,11 +497,57 @@ stack compose discovery-core --branches feature/a --branches feature/b --yes
 				}
 			}
 
-			state.Landings[plan.Destination] = store.LandingRecord{
+			landing := store.LandingRecord{
 				BaseBranch:     plan.Base,
 				SourceBranches: append([]string(nil), selectedBranches...),
+				Tickets:        tickets,
 				CreatedAt:      time.Now().UTC().Format(time.RFC3339),
 			}
+			state.Landings[plan.Destination] = landing
+
+			if openPR {
+				metadata := resolveComposePRMetadata(plan, tickets, title, body)
+				remoteHeadOID, remoteExists, err := runtime.Git.RemoteBranchOID(runtime.Context, state.DefaultRemote, plan.Destination)
+				if err != nil {
+					return err
+				}
+				if err := runtime.Git.PushBranch(runtime.Context, state.DefaultRemote, plan.Destination, remoteHeadOID); err != nil {
+					return err
+				}
+
+				pr, created, err := openOrUpdateLandingPR(runtime, state, plan.Destination, metadata.Title, metadata.Body, draft)
+				if err != nil {
+					return err
+				}
+				landing.LandingPRNumber = pr.Number
+				state.Landings[plan.Destination] = landing
+
+				if err := runtime.Store.WriteState(runtime.Context, state); err != nil {
+					return err
+				}
+
+				lines := []string{
+					fmt.Sprintf("branch: %s", plan.Destination),
+					fmt.Sprintf("base: %s", plan.Base),
+					fmt.Sprintf("replayed commits: %d", plan.CommitCount()),
+					fmt.Sprintf("tickets: %s", chooseComposeTicketSummary(tickets)),
+					fmt.Sprintf("landing PR: #%d", pr.Number),
+				}
+				if remoteExists {
+					lines = append(lines, fmt.Sprintf("pushed: updated %s/%s", state.DefaultRemote, plan.Destination))
+				} else {
+					lines = append(lines, fmt.Sprintf("pushed: created %s/%s", state.DefaultRemote, plan.Destination))
+				}
+				if created {
+					lines = append(lines, fmt.Sprintf("landing PR url: %s", pr.URL))
+				} else {
+					lines = append(lines, "landing PR: refreshed existing GitHub PR")
+				}
+				lines = append(lines, plan.Warnings...)
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), ui.RenderPreview("Composed landing branch", lines))
+				return nil
+			}
+
 			if err := runtime.Store.WriteState(runtime.Context, state); err != nil {
 				return err
 			}
@@ -480,6 +556,7 @@ stack compose discovery-core --branches feature/a --branches feature/b --yes
 				fmt.Sprintf("branch: %s", plan.Destination),
 				fmt.Sprintf("base: %s", plan.Base),
 				fmt.Sprintf("replayed commits: %d", plan.CommitCount()),
+				fmt.Sprintf("tickets: %s", chooseComposeTicketSummary(tickets)),
 			}
 			lines = append(lines, plan.Warnings...)
 			_, _ = fmt.Fprintln(cmd.OutOrStdout(), ui.RenderPreview("Composed landing branch", lines))
@@ -490,6 +567,11 @@ stack compose discovery-core --branches feature/a --branches feature/b --yes
 	cmd.Flags().StringArrayVar(&branches, "branches", nil, "Tracked branches to include in explicit order")
 	cmd.Flags().StringVar(&from, "from", "", "Bottom branch of a contiguous tracked path")
 	cmd.Flags().StringVar(&to, "to", "", "Top branch of a contiguous tracked path")
+	cmd.Flags().StringArrayVar(&ticketValues, "ticket", nil, "Ticket references to attach to the landing branch, comma-separated or repeated")
+	cmd.Flags().BoolVar(&openPR, "open-pr", false, "Push the landing branch and create or refresh its GitHub pull request")
+	cmd.Flags().BoolVar(&draft, "draft", false, "Create the landing PR as a draft when used with --open-pr")
+	cmd.Flags().StringVar(&title, "title", "", "Explicit landing PR title when used with --open-pr")
+	cmd.Flags().StringVar(&body, "body", "", "Explicit landing PR body when used with --open-pr")
 	cmd.Flags().BoolVar(&yes, "yes", false, "Skip confirmation")
 	return cmd
 }
@@ -654,12 +736,16 @@ func newVerifyListCommand(runtime *stackruntime.Runtime) *cobra.Command {
 }
 
 func newCloseoutCommand(runtime *stackruntime.Runtime) *cobra.Command {
+	var apply bool
+	var yes bool
+
 	cmd := &cobra.Command{
 		Use:   "closeout <landing-branch>",
 		Short: "Plan read-only post-merge closeout for a landing branch",
-		Long:  "Use recorded landing composition, pull request state, and verification records to show which original PRs and inferred tickets are safe to close now versus still blocked on deploy checks.",
+		Long:  "Use recorded landing composition, pull request state, and verification records to show which original PRs and explicit tickets are safe to close now versus still blocked on deploy checks.",
 		Example: strings.TrimSpace(`
 stack closeout stack/discovery-core
+stack closeout stack/discovery-core --apply --yes
 		`),
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -673,11 +759,36 @@ stack closeout stack/discovery-core
 				return err
 			}
 
+			if apply {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), ui.RenderPreview("Closeout plan", renderCloseoutPlan(plan)))
+				if !yes {
+					confirmed, err := forms.Confirm("Apply closeout", "This may close superseded GitHub pull requests that are marked safe to close.")
+					if err != nil {
+						return err
+					}
+					if !confirmed {
+						return fmt.Errorf("closeout cancelled")
+					}
+				}
+
+				applied, nextState, err := applyCloseoutPlan(runtime, state, plan)
+				if err != nil {
+					return err
+				}
+				if err := runtime.Store.WriteState(runtime.Context, nextState); err != nil {
+					return err
+				}
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), ui.RenderPreview("Closeout applied", applied))
+				return nil
+			}
+
 			_, _ = fmt.Fprintln(cmd.OutOrStdout(), ui.RenderPreview("Closeout plan", renderCloseoutPlan(plan)))
 			return nil
 		},
 	}
 
+	cmd.Flags().BoolVar(&apply, "apply", false, "Close superseded PRs that are explicitly marked safe to close after landing merge")
+	cmd.Flags().BoolVar(&yes, "yes", false, "Skip confirmation when used with --apply")
 	return cmd
 }
 
@@ -685,6 +796,7 @@ func newSupersedeCommand(runtime *stackruntime.Runtime) *cobra.Command {
 	var landingBranch string
 	var prValues []string
 	var noComment bool
+	var closeAfterMerge bool
 	var yes bool
 
 	cmd := &cobra.Command{
@@ -730,6 +842,9 @@ stack supersede --landing stack/discovery-core --prs 353 --prs 354 --no-comment 
 			} else {
 				lines = append(lines, fmt.Sprintf("comments: %d GitHub PR comments will be posted", len(plan.SupersededPRs)))
 			}
+			if closeAfterMerge {
+				lines = append(lines, "close originals: after landing merge via `stack closeout --apply`")
+			}
 			_, _ = fmt.Fprintln(cmd.OutOrStdout(), ui.RenderPreview("Supersede preview", lines))
 
 			if !yes {
@@ -744,6 +859,8 @@ stack supersede --landing stack/discovery-core --prs 353 --prs 354 --no-comment 
 
 			landing := state.Landings[plan.LandingBranch]
 			landing.SupersededPRs = append([]int(nil), prNumbers...)
+			landing.LandingPRNumber = plan.LandingPR.Number
+			landing.CloseSupersededAfterMerge = closeAfterMerge
 			landing.SupersededAt = time.Now().UTC().Format(time.RFC3339)
 			state.Landings[plan.LandingBranch] = landing
 			if err := runtime.Store.WriteState(runtime.Context, state); err != nil {
@@ -764,6 +881,9 @@ stack supersede --landing stack/discovery-core --prs 353 --prs 354 --no-comment 
 				fmt.Sprintf("landing PR: #%d", plan.LandingPR.Number),
 				fmt.Sprintf("superseded PRs: %s", joinPRNumbers(prNumbers)),
 			}
+			if closeAfterMerge {
+				result = append(result, "close originals: enabled for post-merge closeout")
+			}
 			if noComment {
 				result = append(result, "github comments: skipped")
 			} else {
@@ -777,6 +897,7 @@ stack supersede --landing stack/discovery-core --prs 353 --prs 354 --no-comment 
 	cmd.Flags().StringVar(&landingBranch, "landing", "", "Landing branch to use as the superseding target")
 	cmd.Flags().StringArrayVar(&prValues, "prs", nil, "Original PR numbers, comma-separated or repeated")
 	cmd.Flags().BoolVar(&noComment, "no-comment", false, "Record superseded linkage locally without posting GitHub comments")
+	cmd.Flags().BoolVar(&closeAfterMerge, "close-after-merge", false, "Mark superseded PRs to be closed by `stack closeout --apply` after the landing PR merges")
 	cmd.Flags().BoolVar(&yes, "yes", false, "Skip confirmation")
 	return cmd
 }
@@ -1427,6 +1548,11 @@ type composeCommitPlan struct {
 	Subject string
 }
 
+type composePRMetadata struct {
+	Title string
+	Body  string
+}
+
 type closeoutPlan struct {
 	LandingBranch            string
 	BaseBranch               string
@@ -1651,6 +1777,65 @@ func renderComposePreview(plan composePlan) []string {
 	return lines
 }
 
+func resolveComposePRMetadata(plan composePlan, tickets []string, explicitTitle string, explicitBody string) composePRMetadata {
+	title := strings.TrimSpace(explicitTitle)
+	if title == "" {
+		if len(tickets) > 0 {
+			title = fmt.Sprintf("Landing: %s", strings.Join(tickets, ", "))
+		} else {
+			title = fmt.Sprintf("Landing: %s", strings.TrimPrefix(plan.Destination, "stack/"))
+		}
+	}
+
+	body := strings.TrimSpace(explicitBody)
+	if body == "" {
+		lines := []string{
+			fmt.Sprintf("Composed landing branch `%s` targeting `%s`.", plan.Destination, plan.Base),
+			"",
+			"Included branches:",
+		}
+		for _, branchPlan := range plan.Branches {
+			lines = append(lines, fmt.Sprintf("- `%s`", branchPlan.Name))
+		}
+		if len(tickets) > 0 {
+			lines = append(lines, "", "Tickets:")
+			for _, ticket := range tickets {
+				lines = append(lines, fmt.Sprintf("- `%s`", ticket))
+			}
+		}
+		body = strings.Join(lines, "\n")
+	}
+
+	return composePRMetadata{
+		Title: title,
+		Body:  body,
+	}
+}
+
+func chooseComposeTicketSummary(tickets []string) string {
+	if len(tickets) == 0 {
+		return "none recorded"
+	}
+	return strings.Join(tickets, ", ")
+}
+
+func openOrUpdateLandingPR(runtime *stackruntime.Runtime, state store.RepoState, branch string, title string, body string, draft bool) (store.PullRequest, bool, error) {
+	pr, err := runtime.GitHub.FindPRByHead(runtime.Context, branch)
+	if err != nil {
+		return store.PullRequest{}, false, err
+	}
+	if pr.Number == 0 {
+		created, err := runtime.GitHub.CreatePR(runtime.Context, state.Trunk, branch, title, body, draft)
+		return created, true, err
+	}
+
+	if err := runtime.GitHub.EditPR(runtime.Context, pr.Number, state.Trunk, title, body); err != nil {
+		return store.PullRequest{}, false, err
+	}
+	updated, err := runtime.GitHub.ViewPR(runtime.Context, pr.Number)
+	return updated, false, err
+}
+
 func resolveComposeBranches(state store.RepoState, explicit []string, from string, to string) ([]string, error) {
 	if len(explicit) > 0 {
 		if from != "" || to != "" {
@@ -1738,7 +1923,7 @@ func buildCloseoutPlan(runtime *stackruntime.Runtime, state store.RepoState, lan
 		SourceBranches: make([]closeoutBranchPlan, 0, len(landing.SourceBranches)),
 	}
 
-	landingPRs, err := runtime.GitHub.ListPRsByHead(runtime.Context, landingBranch)
+	landingPRs, err := resolveLandingPRs(runtime, landingBranch, landing)
 	if err != nil {
 		return closeoutPlan{}, err
 	}
@@ -1746,12 +1931,12 @@ func buildCloseoutPlan(runtime *stackruntime.Runtime, state store.RepoState, lan
 	case 0:
 	case 1:
 		pr := landingPRs[0]
+		landing.LandingPRNumber = pr.Number
 		plan.LandingPR = &pr
 	default:
 		plan.LandingPRAmbiguous = append(plan.LandingPRAmbiguous, landingPRs...)
 	}
 
-	ticketSet := map[string]bool{}
 	for _, branch := range landing.SourceBranches {
 		branchPlan := closeoutBranchPlan{Name: branch}
 		record, tracked := state.Branches[branch]
@@ -1763,10 +1948,6 @@ func buildCloseoutPlan(runtime *stackruntime.Runtime, state store.RepoState, lan
 			}
 		}
 		plan.SourceBranches = append(plan.SourceBranches, branchPlan)
-
-		for _, ticket := range extractTicketRefs(branch) {
-			ticketSet[ticket] = true
-		}
 	}
 	if len(landing.SupersededPRs) > 0 {
 		plan.SourceBranches = plan.SourceBranches[:0]
@@ -1780,13 +1961,10 @@ func buildCloseoutPlan(runtime *stackruntime.Runtime, state store.RepoState, lan
 				Name: pr.HeadRefName,
 				PR:   &pr,
 			})
-			for _, ticket := range extractTicketRefs(pr.HeadRefName) {
-				ticketSet[ticket] = true
-			}
 		}
 	}
 
-	tickets := mapKeys(ticketSet)
+	tickets := append([]string(nil), landing.Tickets...)
 	sort.Strings(tickets)
 
 	if plan.LandingPR == nil {
@@ -1806,6 +1984,9 @@ func buildCloseoutPlan(runtime *stackruntime.Runtime, state store.RepoState, lan
 	deployReady, deployFollowUp := closeoutDeployState(state.Verifications[landingBranch], resolveOID(runtime, landingBranch))
 	if deployFollowUp != "" {
 		plan.FollowUps = append(plan.FollowUps, deployFollowUp)
+	}
+	if len(tickets) == 0 {
+		plan.FollowUps = append(plan.FollowUps, fmt.Sprintf("no explicit tickets are recorded for %s; compose or repair the landing metadata with ticket refs before using closeout for ticket closure", landingBranch))
 	}
 
 	for _, branch := range plan.SourceBranches {
@@ -1846,7 +2027,7 @@ func buildSupersedePlan(runtime *stackruntime.Runtime, state store.RepoState, la
 		return supersedePlan{}, fmt.Errorf("landing branch %q has no recorded source branches to supersede", landingBranch)
 	}
 
-	landingPRs, err := runtime.GitHub.ListPRsByHead(runtime.Context, landingBranch)
+	landingPRs, err := resolveLandingPRs(runtime, landingBranch, landing)
 	if err != nil {
 		return supersedePlan{}, err
 	}
@@ -1962,6 +2143,53 @@ func renderCloseoutList(values []string) []string {
 	return lines
 }
 
+func applyCloseoutPlan(runtime *stackruntime.Runtime, state store.RepoState, plan closeoutPlan) ([]string, store.RepoState, error) {
+	nextState := cloneRepoState(state)
+	landing, ok := nextState.Landings[plan.LandingBranch]
+	if !ok {
+		return nil, state, fmt.Errorf("landing branch %q is no longer recorded in local metadata", plan.LandingBranch)
+	}
+	if !landing.CloseSupersededAfterMerge {
+		return nil, state, fmt.Errorf("landing branch %q is not marked for post-merge superseded PR closure; rerun `stack supersede --landing %s --prs ... --close-after-merge` or close the PRs manually", plan.LandingBranch, plan.LandingBranch)
+	}
+	if plan.LandingPR == nil || plan.LandingPR.State != "MERGED" {
+		return nil, state, fmt.Errorf("landing PR for %q must be merged before closeout can apply superseded PR closure", plan.LandingBranch)
+	}
+
+	closed := make([]string, 0, len(plan.SourceBranches))
+	for _, branch := range plan.SourceBranches {
+		if branch.PR == nil || branch.PR.Number == 0 || branch.PR.State != "OPEN" {
+			continue
+		}
+		comment := fmt.Sprintf("Closing as superseded by merged landing PR #%d.", plan.LandingPR.Number)
+		if err := runtime.GitHub.ClosePR(runtime.Context, branch.PR.Number, comment); err != nil {
+			return nil, state, err
+		}
+		closed = append(closed, fmt.Sprintf("#%d %s", branch.PR.Number, branch.Name))
+		for trackedBranch, record := range nextState.Branches {
+			if record.PR.Number != branch.PR.Number {
+				continue
+			}
+			record.PR.State = "CLOSED"
+			nextState.Branches[trackedBranch] = record
+		}
+	}
+
+	lines := []string{
+		fmt.Sprintf("landing branch: %s", plan.LandingBranch),
+		fmt.Sprintf("landing PR: #%d", plan.LandingPR.Number),
+	}
+	if len(closed) == 0 {
+		lines = append(lines, "closed superseded PRs: none")
+	} else {
+		lines = append(lines, fmt.Sprintf("closed superseded PRs: %s", strings.Join(closed, ", ")))
+	}
+	if len(plan.TicketsSafeToClose) > 0 {
+		lines = append(lines, fmt.Sprintf("tickets safe to close now: %s", strings.Join(plan.TicketsSafeToClose, ", ")))
+	}
+	return lines, nextState, nil
+}
+
 func isDeployVerification(checkType string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(checkType))
 	return normalized == "deploy" || normalized == "smoke"
@@ -1997,6 +2225,17 @@ func mapKeys(values map[string]bool) []string {
 	return keys
 }
 
+func resolveLandingPRs(runtime *stackruntime.Runtime, landingBranch string, landing store.LandingRecord) ([]store.PullRequest, error) {
+	if landing.LandingPRNumber > 0 {
+		pr, err := runtime.GitHub.ViewPR(runtime.Context, landing.LandingPRNumber)
+		if err != nil {
+			return nil, err
+		}
+		return []store.PullRequest{pr}, nil
+	}
+	return runtime.GitHub.ListPRsByHead(runtime.Context, landingBranch)
+}
+
 func parsePRNumbers(values []string) ([]int, error) {
 	seen := map[int]bool{}
 	numbers := make([]int, 0)
@@ -2019,6 +2258,30 @@ func parsePRNumbers(values []string) ([]int, error) {
 	}
 	sort.Ints(numbers)
 	return numbers, nil
+}
+
+func parseTicketRefs(values []string) ([]string, error) {
+	seen := map[string]bool{}
+	tickets := make([]string, 0)
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			trimmed := strings.TrimSpace(part)
+			if trimmed == "" {
+				continue
+			}
+			if !ticketRefPattern.MatchString(trimmed) {
+				return nil, fmt.Errorf("invalid ticket reference %q", trimmed)
+			}
+			normalized := strings.ToUpper(trimmed)
+			if seen[normalized] {
+				continue
+			}
+			seen[normalized] = true
+			tickets = append(tickets, normalized)
+		}
+	}
+	sort.Strings(tickets)
+	return tickets, nil
 }
 
 func joinPRNumbers(numbers []int) string {
@@ -2140,7 +2403,7 @@ func buildLandingQueuePlan(runtime *stackruntime.Runtime, state store.RepoState,
 		return queuePlan{}, fmt.Errorf("remote landing branch %q is stale; push or refresh it before queue handoff", branch)
 	}
 
-	prs, err := runtime.GitHub.ListPRsByHead(runtime.Context, branch)
+	prs, err := resolveLandingPRs(runtime, branch, landing)
 	if err != nil {
 		return queuePlan{}, err
 	}
@@ -2198,7 +2461,7 @@ func buildSourceLandingQueuePlan(runtime *stackruntime.Runtime, state store.Repo
 	}
 
 	landingBranch := landingBranches[0]
-	prs, err := runtime.GitHub.ListPRsByHead(runtime.Context, landingBranch)
+	prs, err := resolveLandingPRs(runtime, landingBranch, state.Landings[landingBranch])
 	if err != nil {
 		return queuePlan{}, false, err
 	}
@@ -2491,11 +2754,14 @@ func cloneRepoState(state store.RepoState) store.RepoState {
 	cloned.Landings = make(map[string]store.LandingRecord, len(state.Landings))
 	for branch, record := range state.Landings {
 		cloned.Landings[branch] = store.LandingRecord{
-			BaseBranch:     record.BaseBranch,
-			SourceBranches: append([]string(nil), record.SourceBranches...),
-			SupersededPRs:  append([]int(nil), record.SupersededPRs...),
-			SupersededAt:   record.SupersededAt,
-			CreatedAt:      record.CreatedAt,
+			BaseBranch:                record.BaseBranch,
+			SourceBranches:            append([]string(nil), record.SourceBranches...),
+			Tickets:                   append([]string(nil), record.Tickets...),
+			LandingPRNumber:           record.LandingPRNumber,
+			SupersededPRs:             append([]int(nil), record.SupersededPRs...),
+			CloseSupersededAfterMerge: record.CloseSupersededAfterMerge,
+			SupersededAt:              record.SupersededAt,
+			CreatedAt:                 record.CreatedAt,
 		}
 	}
 	cloned.Verifications = make(map[string][]store.VerificationRecord, len(state.Verifications))

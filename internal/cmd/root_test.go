@@ -1357,6 +1357,92 @@ func TestComposeRejectsNonContiguousExplicitBranches(t *testing.T) {
 	}
 }
 
+func TestComposeOpenPRCreatesLandingPRAndStoresTickets(t *testing.T) {
+	repo := testutil.SetupGitRepo(t)
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	testutil.Run(t, repo, "git", "init", "--bare", remote)
+	testutil.Run(t, repo, "git", "remote", "add", "origin", remote)
+	testutil.Run(t, repo, "git", "push", "-u", "origin", "main")
+
+	testutil.Run(t, repo, "git", "switch", "-c", "feature/a")
+	testutil.WriteFile(t, filepath.Join(repo, "feature-a.txt"), "feature a\n")
+	testutil.Run(t, repo, "git", "add", "feature-a.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "add feature a")
+	featureAHead := strings.TrimSpace(testutil.Run(t, repo, "git", "rev-parse", "feature/a"))
+
+	testutil.Run(t, repo, "git", "switch", "-c", "feature/b")
+	testutil.WriteFile(t, filepath.Join(repo, "feature-b.txt"), "feature b\n")
+	testutil.Run(t, repo, "git", "add", "feature-b.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "add feature b")
+
+	runtime := newTestRuntime(repo)
+	mainHead, err := runtime.Git.ResolveRef(runtime.Context, "main")
+	if err != nil {
+		t.Fatalf("resolve main head: %v", err)
+	}
+	state := store.RepoState{
+		Version:       1,
+		Repo:          "hack-dance/stack",
+		DefaultRemote: "origin",
+		Trunk:         "main",
+		Branches: map[string]store.BranchRecord{
+			"feature/a": {
+				ParentBranch: "main",
+				RemoteName:   "origin",
+				Restack: store.RestackMetadata{
+					LastParentHeadOID: mainHead,
+				},
+			},
+			"feature/b": {
+				ParentBranch: "feature/a",
+				RemoteName:   "origin",
+				Restack: store.RestackMetadata{
+					LastParentHeadOID: featureAHead,
+				},
+			},
+		},
+	}
+	if err := runtime.Store.WriteState(runtime.Context, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	ghStub := testutil.SetupGHStub(t, "hack-dance/stack", "main")
+	t.Setenv("STACK_TEST_GH_STATE", ghStub.StatePath)
+	t.Setenv("STACK_TEST_GH_LOG", ghStub.LogPath)
+	t.Setenv("PATH", ghStub.Dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	output := executeCommand(t, runtime, "compose", "discovery-core", "--from", "feature/a", "--to", "feature/b", "--ticket", "lnhack-66", "--ticket", "LNHACK-67", "--open-pr", "--yes")
+	if !strings.Contains(output, "landing PR: #1") {
+		t.Fatalf("expected compose output to mention landing PR, got %q", output)
+	}
+	if !strings.Contains(output, "tickets: LNHACK-66, LNHACK-67") {
+		t.Fatalf("expected compose output to mention tickets, got %q", output)
+	}
+
+	state, err = runtime.Store.ReadState(runtime.Context)
+	if err != nil {
+		t.Fatalf("read state after compose: %v", err)
+	}
+	landing, ok := state.Landings["stack/discovery-core"]
+	if !ok {
+		t.Fatalf("expected landing metadata to be recorded")
+	}
+	if got := strings.Join(landing.Tickets, ","); got != "LNHACK-66,LNHACK-67" {
+		t.Fatalf("unexpected landing tickets %q", got)
+	}
+	if landing.LandingPRNumber != 1 {
+		t.Fatalf("expected landing PR number 1, got %+v", landing)
+	}
+	if !runtime.Git.RemoteBranchExists(runtime.Context, "origin", "stack/discovery-core") {
+		t.Fatalf("expected landing branch to be pushed to origin")
+	}
+
+	ghState := readFile(t, ghStub.StatePath)
+	if !strings.Contains(ghState, `"headRefName": "stack/discovery-core"`) || !strings.Contains(ghState, `"title": "Landing: LNHACK-66, LNHACK-67"`) {
+		t.Fatalf("expected landing PR to be created in gh state, got %q", ghState)
+	}
+}
+
 func TestCloseoutClassifiesSupersededPRsAndDeployGatedTickets(t *testing.T) {
 	repo := testutil.SetupGitRepo(t)
 	remote := filepath.Join(t.TempDir(), "remote.git")
@@ -1423,6 +1509,7 @@ func TestCloseoutClassifiesSupersededPRsAndDeployGatedTickets(t *testing.T) {
 			"stack/discovery-core": {
 				BaseBranch:     "main",
 				SourceBranches: []string{"hack-agent/lnhack-66-feature-a", "hack-agent/lnhack-67-feature-b"},
+				Tickets:        []string{"LNHACK-66", "LNHACK-67"},
 				CreatedAt:      "2026-03-26T18:30:00Z",
 			},
 		},
@@ -1499,10 +1586,132 @@ func TestCloseoutClassifiesSupersededPRsAndDeployGatedTickets(t *testing.T) {
 		t.Fatalf("expected superseded PRs in closeout output, got %q", output)
 	}
 	if !strings.Contains(output, "LNHACK-66") || !strings.Contains(output, "LNHACK-67") {
-		t.Fatalf("expected inferred ticket refs in closeout output, got %q", output)
+		t.Fatalf("expected explicit ticket refs in closeout output, got %q", output)
 	}
 	if strings.Contains(output, "record a passed deploy or smoke verification") {
 		t.Fatalf("expected deploy follow-up to be cleared, got %q", output)
+	}
+}
+
+func TestCloseoutApplyClosesSupersededPRsWhenOptedIn(t *testing.T) {
+	repo := testutil.SetupGitRepo(t)
+	testutil.Run(t, repo, "git", "switch", "-c", "feature/a")
+	testutil.WriteFile(t, filepath.Join(repo, "a.txt"), "a\n")
+	testutil.Run(t, repo, "git", "add", "a.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "add a")
+	featureAHead := strings.TrimSpace(testutil.Run(t, repo, "git", "rev-parse", "HEAD"))
+
+	testutil.Run(t, repo, "git", "switch", "main")
+	testutil.Run(t, repo, "git", "switch", "-c", "stack/discovery-core")
+	testutil.WriteFile(t, filepath.Join(repo, "landing.txt"), "landing\n")
+	testutil.Run(t, repo, "git", "add", "landing.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "landing")
+	landingHead := strings.TrimSpace(testutil.Run(t, repo, "git", "rev-parse", "HEAD"))
+
+	runtime := newTestRuntime(repo)
+	mainHead, err := runtime.Git.ResolveRef(runtime.Context, "main")
+	if err != nil {
+		t.Fatalf("resolve main head: %v", err)
+	}
+	state := store.RepoState{
+		Version:       1,
+		Repo:          "hack-dance/stack",
+		DefaultRemote: "origin",
+		Trunk:         "main",
+		Branches: map[string]store.BranchRecord{
+			"feature/a": {
+				ParentBranch: "main",
+				PR: store.PullRequest{
+					Number:          1,
+					HeadRefName:     "feature/a",
+					BaseRefName:     "main",
+					LastSeenHeadOID: featureAHead,
+					State:           "OPEN",
+				},
+				Restack: store.RestackMetadata{LastParentHeadOID: mainHead},
+			},
+		},
+		Landings: map[string]store.LandingRecord{
+			"stack/discovery-core": {
+				BaseBranch:                "main",
+				SourceBranches:            []string{"feature/a"},
+				Tickets:                   []string{"LNHACK-66"},
+				LandingPRNumber:           9,
+				SupersededPRs:             []int{1},
+				CloseSupersededAfterMerge: true,
+				CreatedAt:                 "2026-03-26T18:35:00Z",
+			},
+		},
+		Verifications: map[string][]store.VerificationRecord{
+			"stack/discovery-core": {
+				{
+					CheckType:  "deploy",
+					Identifier: "deploy-1",
+					Passed:     true,
+					HeadOID:    landingHead,
+					RecordedAt: "2026-03-26T18:36:00Z",
+				},
+			},
+		},
+	}
+	if err := runtime.Store.WriteState(runtime.Context, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	ghStub := testutil.SetupGHStub(t, "hack-dance/stack", "main")
+	t.Setenv("STACK_TEST_GH_STATE", ghStub.StatePath)
+	t.Setenv("STACK_TEST_GH_LOG", ghStub.LogPath)
+	t.Setenv("PATH", ghStub.Dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	writeGHState(t, ghStub.StatePath, `{
+  "repo": {
+    "nameWithOwner": "hack-dance/stack",
+    "url": "https://github.com/hack-dance/stack",
+    "defaultBranchRef": { "name": "main" }
+  },
+  "prs": {
+    "1": {
+      "id": "PR_1",
+      "number": 1,
+      "url": "https://example.com/hack-dance/stack/pull/1",
+      "repo": "hack-dance/stack",
+      "headRefName": "feature/a",
+      "baseRefName": "main",
+      "headRefOid": "`+featureAHead+`",
+      "state": "OPEN",
+      "isDraft": false
+    },
+    "9": {
+      "id": "PR_9",
+      "number": 9,
+      "url": "https://example.com/hack-dance/stack/pull/9",
+      "repo": "hack-dance/stack",
+      "headRefName": "stack/discovery-core",
+      "baseRefName": "main",
+      "headRefOid": "`+landingHead+`",
+      "state": "MERGED",
+      "isDraft": false
+    }
+  },
+  "next_number": 10
+}`)
+
+	output := executeCommand(t, runtime, "closeout", "stack/discovery-core", "--apply", "--yes")
+	if !strings.Contains(output, "closed superseded PRs: #1 feature/a") {
+		t.Fatalf("expected closeout apply output to mention closed PR, got %q", output)
+	}
+
+	log := readFile(t, ghStub.LogPath)
+	if !strings.Contains(log, "pr close 1 --comment Closing as superseded by merged landing PR #9.") {
+		t.Fatalf("expected GitHub close log, got %q", log)
+	}
+
+	state, err = runtime.Store.ReadState(runtime.Context)
+	if err != nil {
+		t.Fatalf("read state after closeout apply: %v", err)
+	}
+	if state.Branches["feature/a"].PR.State != "CLOSED" {
+		t.Fatalf("expected tracked PR state to be updated locally, got %+v", state.Branches["feature/a"].PR)
 	}
 }
 
@@ -1664,7 +1873,7 @@ func TestSupersedeRecordsMetadataAndCommentsOriginalPRs(t *testing.T) {
   "next_number": 10
 }`)
 
-	output := executeCommand(t, runtime, "supersede", "--landing", "stack/discovery-core", "--prs", "1,2", "--yes")
+	output := executeCommand(t, runtime, "supersede", "--landing", "stack/discovery-core", "--prs", "1,2", "--close-after-merge", "--yes")
 	if !strings.Contains(output, "github comments: posted") {
 		t.Fatalf("expected supersede output to mention posted comments, got %q", output)
 	}
@@ -1679,6 +1888,12 @@ func TestSupersedeRecordsMetadataAndCommentsOriginalPRs(t *testing.T) {
 	}
 	if got := strings.TrimSpace(joinPRNumbers(landing.SupersededPRs)); got != "#1, #2" {
 		t.Fatalf("expected superseded PR metadata to be recorded, got %q", got)
+	}
+	if !landing.CloseSupersededAfterMerge {
+		t.Fatalf("expected close-after-merge metadata to be recorded")
+	}
+	if landing.LandingPRNumber != 9 {
+		t.Fatalf("expected landing PR number to be recorded, got %+v", landing)
 	}
 
 	log := readFile(t, ghStub.LogPath)
