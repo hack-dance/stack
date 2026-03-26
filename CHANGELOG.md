@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.7](https://github.com/hack-dance/stack/compare/v0.1.6...v0.1.7) (2026-03-26)
+
+
+### Bug Fixes
+
+* address review regressions in adopt and compose ([9fba65f](https://github.com/hack-dance/stack/commit/9fba65f3ea93444b376cf4a2b95f88aa0c6816a0))
+* recover stale landing pr references ([02909ed](https://github.com/hack-dance/stack/commit/02909ed7328e7b7adcbad4e1becaca0762da1265))
+* tighten landing pr recovery paths ([31b8bbb](https://github.com/hack-dance/stack/commit/31b8bbb48abf32b8e15eaf2955860560beeccd87))
+* validate superseded pr membership ([2fbc047](https://github.com/hack-dance/stack/commit/2fbc0475df57c4b3497d20ff61bbd479031f6c50))
+
 ## [0.1.6](https://github.com/hack-dance/stack/compare/v0.1.5...v0.1.6) (2026-03-26)
 
 
