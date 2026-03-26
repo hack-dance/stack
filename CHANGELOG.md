@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.5](https://github.com/hack-dance/stack/compare/v0.1.4...v0.1.5) (2026-03-26)
+
+
+### Bug Fixes
+
+* dispatch releases explicitly after tagging ([1dc615a](https://github.com/hack-dance/stack/commit/1dc615a8e4ad04f8e20d9362e1a2dfd69ab10629))
+* dispatch releases explicitly after tagging ([7bcbed8](https://github.com/hack-dance/stack/commit/7bcbed8506434675ffa91c57df8b6df293705f28))
+* use merge-base anchors for stale branch adoption ([97fbc5c](https://github.com/hack-dance/stack/commit/97fbc5c9a3b13f56ebffc02a076302bebc900a5a))
+* use merge-base anchors for stale branch adoption ([c5d68c2](https://github.com/hack-dance/stack/commit/c5d68c227cc2382ef1b1b4b41f8f0c0c85ec5abb))
+
 ## [0.1.4](https://github.com/hack-dance/stack/compare/v0.1.3...v0.1.4) (2026-03-26)
 
 
