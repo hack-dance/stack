@@ -2864,6 +2864,109 @@ func TestQueueLandingBranchPrefersUniqueOpenPRWhenHistoryExists(t *testing.T) {
 	}
 }
 
+func TestQueueLandingBranchIgnoresStaleRecordedClosedLandingPRWhenReplacementExists(t *testing.T) {
+	repo, runtime, _ := setupTrackedStackRepo(t)
+	testutil.Run(t, repo, "git", "switch", "main")
+	testutil.Run(t, repo, "git", "switch", "-c", "stack/discovery-core")
+	testutil.WriteFile(t, filepath.Join(repo, "landing.txt"), "landing\n")
+	testutil.Run(t, repo, "git", "add", "landing.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "landing")
+	testutil.Run(t, repo, "git", "push", "-u", "origin", "stack/discovery-core")
+	landingHead := strings.TrimSpace(testutil.Run(t, repo, "git", "rev-parse", "HEAD"))
+
+	state := store.RepoState{
+		Version:       1,
+		Repo:          "hack-dance/stack",
+		DefaultRemote: "origin",
+		Trunk:         "main",
+		Branches:      map[string]store.BranchRecord{},
+		Landings: map[string]store.LandingRecord{
+			"stack/discovery-core": {
+				BaseBranch:     "main",
+				SourceBranches: []string{},
+				LandingPRNumber: 8,
+				CreatedAt:      "2026-03-26T18:40:00Z",
+			},
+		},
+		Verifications: map[string][]store.VerificationRecord{
+			"stack/discovery-core": {
+				{
+					CheckType:  "manual",
+					Identifier: "check",
+					Passed:     true,
+					HeadOID:    landingHead,
+					RecordedAt: "2026-03-26T18:41:00Z",
+				},
+			},
+		},
+	}
+	if err := runtime.Store.WriteState(runtime.Context, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	ghStub := testutil.SetupGHStub(t, "hack-dance/stack", "main")
+	t.Setenv("STACK_TEST_GH_STATE", ghStub.StatePath)
+	t.Setenv("STACK_TEST_GH_LOG", ghStub.LogPath)
+	t.Setenv("PATH", ghStub.Dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	writeGHState(t, ghStub.StatePath, `{
+  "repo": {
+    "nameWithOwner": "hack-dance/stack",
+    "url": "https://github.com/hack-dance/stack",
+    "defaultBranchRef": { "name": "main" }
+  },
+  "prs": {
+    "8": {
+      "id": "PR_8",
+      "number": 8,
+      "url": "https://example.com/hack-dance/stack/pull/8",
+      "repo": "hack-dance/stack",
+      "headRefName": "stack/discovery-core",
+      "baseRefName": "main",
+      "headRefOid": "`+landingHead+`",
+      "state": "CLOSED",
+      "isDraft": false
+    },
+    "9": {
+      "id": "PR_9",
+      "number": 9,
+      "url": "https://example.com/hack-dance/stack/pull/9",
+      "repo": "hack-dance/stack",
+      "headRefName": "stack/discovery-core",
+      "baseRefName": "main",
+      "headRefOid": "`+landingHead+`",
+      "state": "OPEN",
+      "isDraft": false
+    }
+  },
+  "next_number": 10
+}`)
+
+	output := executeCommand(t, runtime, "queue", "stack/discovery-core", "--yes")
+	if !strings.Contains(output, "PR #9") {
+		t.Fatalf("expected queue output to use replacement open landing PR, got %q", output)
+	}
+
+	log := readFile(t, ghStub.LogPath)
+	if !strings.Contains(log, "pr merge 9 --auto --merge --match-head-commit "+landingHead) {
+		t.Fatalf("expected queue to merge replacement open landing PR #9, got %q", log)
+	}
+}
+
+func TestParseTicketRefsRejectsPartialMatches(t *testing.T) {
+	tests := []string{
+		"ABC-123/extra",
+		"prefix/ABC-1",
+		"ABC-123 extra",
+	}
+	for _, value := range tests {
+		tickets, err := parseTicketRefs([]string{value})
+		if err == nil {
+			t.Fatalf("expected parseTicketRefs to reject %q, got tickets %+v", value, tickets)
+		}
+	}
+}
+
 func TestQueueRejectsLandingBranchWithStaleVerification(t *testing.T) {
 	repo := testutil.SetupGitRepo(t)
 	remote := filepath.Join(t.TempDir(), "remote.git")

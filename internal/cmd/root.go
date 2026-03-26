@@ -2241,6 +2241,7 @@ func isDeployVerification(checkType string) bool {
 }
 
 var ticketRefPattern = regexp.MustCompile(`(?i)\b[a-z][a-z0-9]+-\d+\b`)
+var fullTicketRefPattern = regexp.MustCompile(`(?i)^[a-z][a-z0-9]+-\d+$`)
 
 func extractTicketRefs(value string) []string {
 	matches := ticketRefPattern.FindAllString(value, -1)
@@ -2271,12 +2272,16 @@ func mapKeys(values map[string]bool) []string {
 }
 
 func resolveLandingPRs(runtime *stackruntime.Runtime, landingBranch string, landing store.LandingRecord) ([]store.PullRequest, error) {
+	var recorded *store.PullRequest
 	if landing.LandingPRNumber > 0 {
 		pr, err := runtime.GitHub.ViewPR(runtime.Context, landing.LandingPRNumber)
 		if err != nil {
 			return nil, err
 		}
-		return []store.PullRequest{pr}, nil
+		recorded = &pr
+		if pr.State == "OPEN" {
+			return []store.PullRequest{pr}, nil
+		}
 	}
 	prs, err := runtime.GitHub.ListPRsByHead(runtime.Context, landingBranch)
 	if err != nil {
@@ -2294,6 +2299,9 @@ func resolveLandingPRs(runtime *stackruntime.Runtime, landingBranch string, land
 	}
 	if len(open) > 1 {
 		return open, nil
+	}
+	if recorded != nil {
+		return []store.PullRequest{*recorded}, nil
 	}
 
 	return prs, nil
@@ -2332,7 +2340,7 @@ func parseTicketRefs(values []string) ([]string, error) {
 			if trimmed == "" {
 				continue
 			}
-			if !ticketRefPattern.MatchString(trimmed) {
+			if !fullTicketRefPattern.MatchString(trimmed) {
 				return nil, fmt.Errorf("invalid ticket reference %q", trimmed)
 			}
 			normalized := strings.ToUpper(trimmed)
