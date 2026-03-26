@@ -17,6 +17,7 @@ on:
         required: false
 
 permissions:
+  actions: write
   contents: write
   issues: write
   pull-requests: write
@@ -51,23 +52,37 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Create tag if missing
+        id: create_tag
         env:
           PUSH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
           TARGET_SHA: ${{ github.event.inputs.sha || github.event.pull_request.merge_commit_sha || github.sha }}
         run: |
           tag="v${{ steps.version.outputs.version }}"
+          created="false"
 
           git fetch --tags origin
           if git rev-parse "$tag" >/dev/null 2>&1; then
             echo "tag $tag already exists"
-            exit 0
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git remote set-url origin "https://x-access-token:${PUSH_TOKEN}@github.com/${{ github.repository }}.git"
+            git tag "$tag" "$TARGET_SHA"
+            git push origin "$tag"
+            created="true"
           fi
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin "https://x-access-token:${PUSH_TOKEN}@github.com/${{ github.repository }}.git"
-          git tag "$tag" "$TARGET_SHA"
-          git push origin "$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "created=$created" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch release workflow
+        if: steps.create_tag.outputs.created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run release.yml \
+            --ref main \
+            -f tag="${{ steps.create_tag.outputs.tag }}"
 
       - name: Mark release PR as tagged
         if: github.event_name == 'pull_request_target' || github.event.inputs.pr_number != ''
