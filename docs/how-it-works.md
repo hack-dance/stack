@@ -45,6 +45,10 @@ branch, and PR head all match, then hands that PR to GitHub auto-merge or merge
 queue. After the merge lands, `stack sync` helps advance the remaining stack to
 the next safe state.
 
+Because `stack` delegates that final step to GitHub, the repository must have
+auto-merge enabled. On repos with merge queue configured, GitHub applies queue
+policy after the handoff.
+
 ## How this differs from Graphite and similar tools
 
 The important difference is workflow shape: `stack` keeps branches and PRs

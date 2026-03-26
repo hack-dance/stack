@@ -45,6 +45,10 @@ and cached PR state.
 4. Run `stack queue <branch>` only when the bottom branch targets trunk and is healthy.
 5. Run `stack sync` after merges or GitHub-side base changes.
 
+For `stack queue`, GitHub repository auto-merge must be enabled. `stack` hands
+off through `gh pr merge --auto`, then GitHub applies the repo's normal
+auto-merge or merge-queue policy.
+
 ## Repair loop
 
 Use `stack sync` first when local metadata and GitHub disagree.
@@ -68,3 +72,4 @@ clean recovery point.
 - `move`, `restack`, `submit`, and `queue` preview before destructive work unless you pass `--yes`
 - `sync` stops on ambiguous merged-parent cases instead of guessing
 - `queue` is only for a healthy bottom-of-stack PR
+- `queue` requires GitHub repository auto-merge to be enabled

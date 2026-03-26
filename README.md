@@ -42,6 +42,10 @@ base, head, and remote state, then hands that PR to GitHub auto-merge or merge
 queue. After the merge lands, `stack sync` helps the rest of the stack catch up
 without guessing through ambiguous cases.
 
+That handoff uses GitHub's own auto-merge path via `gh pr merge --auto`, so the
+repository must have auto-merge enabled. If the repo also uses merge queue,
+GitHub decides whether the PR goes straight to auto-merge or enters the queue.
+
 ## How it differs from Graphite and similar tools
 
 `stack` is closest in spirit to tools that keep explicit local stack metadata,
@@ -74,6 +78,9 @@ stack status
 stack submit --all
 stack queue feature/base
 ```
+
+Before using `stack queue`, make sure the GitHub repository has auto-merge
+enabled.
 
 For the full daily workflow, start with [docs/usage.md](docs/usage.md).
 
