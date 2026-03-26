@@ -1957,7 +1957,7 @@ func TestCloseoutRequiresExplicitResolutionForAmbiguousLandingPRs(t *testing.T) 
       "headRefName": "stack/discovery-core",
       "baseRefName": "main",
       "headRefOid": "`+landingHead+`",
-      "state": "MERGED",
+      "state": "OPEN",
       "isDraft": false
     }
   },
@@ -1967,6 +1967,95 @@ func TestCloseoutRequiresExplicitResolutionForAmbiguousLandingPRs(t *testing.T) 
 	output := executeCommand(t, runtime, "closeout", "stack/discovery-core")
 	if !strings.Contains(output, "landing PR: ambiguous") || !strings.Contains(output, "resolve ambiguous landing PR ownership") {
 		t.Fatalf("expected ambiguous landing PR guidance, got %q", output)
+	}
+}
+
+func TestCloseoutSurfacesTrackedSourcePRRefreshFailures(t *testing.T) {
+	repo := testutil.SetupGitRepo(t)
+	testutil.Run(t, repo, "git", "switch", "-c", "feature/a")
+	testutil.WriteFile(t, filepath.Join(repo, "feature-a.txt"), "feature a\n")
+	testutil.Run(t, repo, "git", "add", "feature-a.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "add feature a")
+
+	testutil.Run(t, repo, "git", "switch", "main")
+	testutil.Run(t, repo, "git", "switch", "-c", "stack/discovery-core")
+	testutil.WriteFile(t, filepath.Join(repo, "landing.txt"), "landing\n")
+	testutil.Run(t, repo, "git", "add", "landing.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "landing")
+	landingHead := strings.TrimSpace(testutil.Run(t, repo, "git", "rev-parse", "HEAD"))
+
+	runtime := newTestRuntime(repo)
+	state := store.RepoState{
+		Version:       1,
+		Repo:          "hack-dance/stack",
+		DefaultRemote: "origin",
+		Trunk:         "main",
+		Branches: map[string]store.BranchRecord{
+			"feature/a": {
+				ParentBranch: "main",
+				RemoteName:   "origin",
+				PR: store.PullRequest{
+					Number:          1,
+					HeadRefName:     "feature/a",
+					BaseRefName:     "main",
+					LastSeenHeadOID: strings.TrimSpace(testutil.Run(t, repo, "git", "rev-parse", "feature/a")),
+					State:           "OPEN",
+				},
+			},
+		},
+		Landings: map[string]store.LandingRecord{
+			"stack/discovery-core": {
+				BaseBranch:     "main",
+				SourceBranches: []string{"feature/a"},
+				CreatedAt:      "2026-03-26T18:40:00Z",
+			},
+		},
+		Verifications: map[string][]store.VerificationRecord{
+			"stack/discovery-core": {
+				{
+					CheckType:  "manual",
+					Identifier: "check",
+					Passed:     true,
+					HeadOID:    landingHead,
+					RecordedAt: "2026-03-26T18:41:00Z",
+				},
+			},
+		},
+	}
+	if err := runtime.Store.WriteState(runtime.Context, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	ghStub := testutil.SetupGHStub(t, "hack-dance/stack", "main")
+	t.Setenv("STACK_TEST_GH_STATE", ghStub.StatePath)
+	t.Setenv("STACK_TEST_GH_LOG", ghStub.LogPath)
+	t.Setenv("PATH", ghStub.Dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	writeGHState(t, ghStub.StatePath, `{
+  "repo": {
+    "nameWithOwner": "hack-dance/stack",
+    "url": "https://github.com/hack-dance/stack",
+    "defaultBranchRef": { "name": "main" }
+  },
+  "prs": {
+    "9": {
+      "id": "PR_9",
+      "number": 9,
+      "url": "https://example.com/hack-dance/stack/pull/9",
+      "repo": "hack-dance/stack",
+      "headRefName": "stack/discovery-core",
+      "baseRefName": "main",
+      "headRefOid": "`+landingHead+`",
+      "state": "MERGED",
+      "isDraft": false
+    }
+  },
+  "next_number": 10
+}`)
+
+	output := executeCommand(t, runtime, "closeout", "stack/discovery-core")
+	if !strings.Contains(output, `source PR for feature/a could not be refreshed: tracked PR #1 for "feature/a" could not be loaded`) {
+		t.Fatalf("expected source PR refresh failure guidance, got %q", output)
 	}
 }
 
@@ -2682,6 +2771,94 @@ func TestQueueAllowsLandingBranchAndPrintsCloseoutGuidance(t *testing.T) {
 	expected := "pr merge 9 --auto --merge --match-head-commit " + landingHead
 	if !strings.Contains(log, expected) {
 		t.Fatalf("expected gh merge log %q, got %q", expected, log)
+	}
+}
+
+func TestQueueLandingBranchPrefersUniqueOpenPRWhenHistoryExists(t *testing.T) {
+	repo, runtime, _ := setupTrackedStackRepo(t)
+	testutil.Run(t, repo, "git", "switch", "main")
+	testutil.Run(t, repo, "git", "switch", "-c", "stack/discovery-core")
+	testutil.WriteFile(t, filepath.Join(repo, "landing.txt"), "landing\n")
+	testutil.Run(t, repo, "git", "add", "landing.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "landing")
+	testutil.Run(t, repo, "git", "push", "-u", "origin", "stack/discovery-core")
+	landingHead := strings.TrimSpace(testutil.Run(t, repo, "git", "rev-parse", "HEAD"))
+
+	state := store.RepoState{
+		Version:       1,
+		Repo:          "hack-dance/stack",
+		DefaultRemote: "origin",
+		Trunk:         "main",
+		Branches:      map[string]store.BranchRecord{},
+		Landings: map[string]store.LandingRecord{
+			"stack/discovery-core": {
+				BaseBranch:     "main",
+				SourceBranches: []string{},
+				CreatedAt:      "2026-03-26T18:40:00Z",
+			},
+		},
+		Verifications: map[string][]store.VerificationRecord{
+			"stack/discovery-core": {
+				{
+					CheckType:  "manual",
+					Identifier: "check",
+					Passed:     true,
+					HeadOID:    landingHead,
+					RecordedAt: "2026-03-26T18:41:00Z",
+				},
+			},
+		},
+	}
+	if err := runtime.Store.WriteState(runtime.Context, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	ghStub := testutil.SetupGHStub(t, "hack-dance/stack", "main")
+	t.Setenv("STACK_TEST_GH_STATE", ghStub.StatePath)
+	t.Setenv("STACK_TEST_GH_LOG", ghStub.LogPath)
+	t.Setenv("PATH", ghStub.Dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	writeGHState(t, ghStub.StatePath, `{
+  "repo": {
+    "nameWithOwner": "hack-dance/stack",
+    "url": "https://github.com/hack-dance/stack",
+    "defaultBranchRef": { "name": "main" }
+  },
+  "prs": {
+    "9": {
+      "id": "PR_9",
+      "number": 9,
+      "url": "https://example.com/hack-dance/stack/pull/9",
+      "repo": "hack-dance/stack",
+      "headRefName": "stack/discovery-core",
+      "baseRefName": "main",
+      "headRefOid": "`+landingHead+`",
+      "state": "OPEN",
+      "isDraft": false
+    },
+    "10": {
+      "id": "PR_10",
+      "number": 10,
+      "url": "https://example.com/hack-dance/stack/pull/10",
+      "repo": "hack-dance/stack",
+      "headRefName": "stack/discovery-core",
+      "baseRefName": "main",
+      "headRefOid": "`+landingHead+`",
+      "state": "MERGED",
+      "isDraft": false
+    }
+  },
+  "next_number": 11
+}`)
+
+	output := executeCommand(t, runtime, "queue", "stack/discovery-core", "--yes")
+	if !strings.Contains(output, "PR #9") {
+		t.Fatalf("expected queue output to use the unique open landing PR, got %q", output)
+	}
+
+	log := readFile(t, ghStub.LogPath)
+	if !strings.Contains(log, "pr merge 9 --auto --merge --match-head-commit "+landingHead) {
+		t.Fatalf("expected queue to merge open landing PR #9, got %q", log)
 	}
 }
 

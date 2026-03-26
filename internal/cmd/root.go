@@ -1985,7 +1985,9 @@ func buildCloseoutPlan(runtime *stackruntime.Runtime, state store.RepoState, lan
 		record, tracked := state.Branches[branch]
 		if tracked {
 			record, err = refreshTrackedPR(runtime, state, branch, record)
-			if err == nil && record.PR.Number > 0 {
+			if err != nil {
+				plan.FollowUps = append(plan.FollowUps, fmt.Sprintf("source PR for %s could not be refreshed: %v", branch, err))
+			} else if record.PR.Number > 0 {
 				pr := record.PR
 				branchPlan.PR = &pr
 			}
@@ -2276,7 +2278,25 @@ func resolveLandingPRs(runtime *stackruntime.Runtime, landingBranch string, land
 		}
 		return []store.PullRequest{pr}, nil
 	}
-	return runtime.GitHub.ListPRsByHead(runtime.Context, landingBranch)
+	prs, err := runtime.GitHub.ListPRsByHead(runtime.Context, landingBranch)
+	if err != nil {
+		return nil, err
+	}
+
+	open := make([]store.PullRequest, 0, len(prs))
+	for _, pr := range prs {
+		if pr.State == "OPEN" {
+			open = append(open, pr)
+		}
+	}
+	if len(open) == 1 {
+		return open, nil
+	}
+	if len(open) > 1 {
+		return open, nil
+	}
+
+	return prs, nil
 }
 
 func parsePRNumbers(values []string) ([]int, error) {
