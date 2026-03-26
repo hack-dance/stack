@@ -328,7 +328,18 @@ stack adopt pr 354 --parent pr/353 --yes
 				return err
 			}
 
-			needsFetch := !runtime.Git.BranchExists(runtime.Context, branch)
+			branchExists := runtime.Git.BranchExists(runtime.Context, branch)
+			localHeadOID := ""
+			if branchExists {
+				localHeadOID, err = runtime.Git.ResolveRef(runtime.Context, branch)
+				if err != nil {
+					return err
+				}
+				localHeadOID = strings.TrimSpace(localHeadOID)
+			}
+			prHeadOID := strings.TrimSpace(pr.LastSeenHeadOID)
+			needsFetch := !branchExists
+			refreshHead := branchExists && localHeadOID != "" && prHeadOID != "" && localHeadOID != prHeadOID
 			preview := []string{
 				fmt.Sprintf("pr: #%d", pr.Number),
 				fmt.Sprintf("branch: %s", branch),
@@ -336,6 +347,8 @@ stack adopt pr 354 --parent pr/353 --yes
 			}
 			if needsFetch {
 				preview = append(preview, fmt.Sprintf("fetch: %s/%s -> %s", state.DefaultRemote, branch, branch))
+			} else if refreshHead {
+				preview = append(preview, fmt.Sprintf("refresh: local head %s -> PR head %s", shortOID(localHeadOID), shortOID(prHeadOID)))
 			}
 			if pr.BaseRefName != "" && pr.BaseRefName != parent {
 				preview = append(preview, fmt.Sprintf("note: PR #%d currently targets %s; `stack submit %s` will retarget it later", pr.Number, pr.BaseRefName, branch))
@@ -343,7 +356,7 @@ stack adopt pr 354 --parent pr/353 --yes
 			_, _ = fmt.Fprintln(cmd.OutOrStdout(), ui.RenderPreview("Adopt PR preview", preview))
 
 			if !yes {
-				confirmed, err := forms.Confirm("Adopt pull request", "This may fetch a remote branch head and will update local stack metadata.")
+				confirmed, err := forms.Confirm("Adopt pull request", "This may fetch or refresh a remote branch head and will update local stack metadata.")
 				if err != nil {
 					return err
 				}
@@ -355,6 +368,34 @@ stack adopt pr 354 --parent pr/353 --yes
 			if needsFetch {
 				if err := runtime.Git.FetchBranch(runtime.Context, state.DefaultRemote, branch, branch); err != nil {
 					return fmt.Errorf("fetch pull request #%d head %q from %s: %w", pr.Number, branch, state.DefaultRemote, err)
+				}
+				if prHeadOID != "" {
+					fetchedHeadOID, err := runtime.Git.ResolveRef(runtime.Context, branch)
+					if err != nil {
+						return err
+					}
+					if strings.TrimSpace(fetchedHeadOID) != prHeadOID {
+						return fmt.Errorf("fetched pull request #%d head %q from %s, but local branch %q now points to %s instead of expected PR head %s", pr.Number, branch, state.DefaultRemote, branch, shortOID(strings.TrimSpace(fetchedHeadOID)), shortOID(prHeadOID))
+					}
+				}
+			}
+			if refreshHead {
+				currentBranch, err := runtime.Git.CurrentBranch(runtime.Context)
+				if err != nil {
+					return err
+				}
+				if strings.TrimSpace(currentBranch) == branch {
+					return fmt.Errorf("local branch %q points to %s but pull request #%d is at %s; switch away from %s or delete the local branch, then rerun `stack adopt pr %d --parent %s`", branch, shortOID(localHeadOID), pr.Number, shortOID(prHeadOID), branch, pr.Number, parent)
+				}
+				if err := runtime.Git.FetchBranchForce(runtime.Context, state.DefaultRemote, branch, branch); err != nil {
+					return fmt.Errorf("refresh pull request #%d head %q from %s: %w", pr.Number, branch, state.DefaultRemote, err)
+				}
+				refreshedHeadOID, err := runtime.Git.ResolveRef(runtime.Context, branch)
+				if err != nil {
+					return err
+				}
+				if strings.TrimSpace(refreshedHeadOID) != prHeadOID {
+					return fmt.Errorf("refreshed pull request #%d head %q from %s, but local branch %q now points to %s instead of expected PR head %s", pr.Number, branch, state.DefaultRemote, branch, shortOID(strings.TrimSpace(refreshedHeadOID)), shortOID(prHeadOID))
 				}
 			}
 
@@ -387,6 +428,9 @@ stack adopt pr 354 --parent pr/353 --yes
 			}
 			if needsFetch {
 				lines = append(lines, fmt.Sprintf("fetched: %s/%s", state.DefaultRemote, branch))
+			}
+			if refreshHead {
+				lines = append(lines, fmt.Sprintf("refreshed: %s/%s -> %s", state.DefaultRemote, branch, shortOID(prHeadOID)))
 			}
 			if usedMergeBase {
 				lines = append(lines, "restack anchor: merge-base with the selected parent")
@@ -504,6 +548,9 @@ stack compose discovery-core --branches feature/a --branches feature/b --yes
 				CreatedAt:      time.Now().UTC().Format(time.RFC3339),
 			}
 			state.Landings[plan.Destination] = landing
+			if err := runtime.Store.WriteState(runtime.Context, state); err != nil {
+				return err
+			}
 
 			if openPR {
 				metadata := resolveComposePRMetadata(plan, tickets, title, body)
@@ -546,10 +593,6 @@ stack compose discovery-core --branches feature/a --branches feature/b --yes
 				lines = append(lines, plan.Warnings...)
 				_, _ = fmt.Fprintln(cmd.OutOrStdout(), ui.RenderPreview("Composed landing branch", lines))
 				return nil
-			}
-
-			if err := runtime.Store.WriteState(runtime.Context, state); err != nil {
-				return err
 			}
 
 			lines := []string{

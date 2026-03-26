@@ -1230,6 +1230,97 @@ func TestAdoptPRUsesMergeBaseAnchorForStaleLocalBranch(t *testing.T) {
 	}
 }
 
+func TestAdoptPRRefreshesStaleLocalBranchToMatchPRHead(t *testing.T) {
+	repo := testutil.SetupGitRepo(t)
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	testutil.Run(t, repo, "git", "init", "--bare", remote)
+	testutil.Run(t, repo, "git", "remote", "add", "origin", remote)
+	testutil.Run(t, repo, "git", "push", "-u", "origin", "main")
+
+	testutil.Run(t, repo, "git", "switch", "-c", "feature/a")
+	testutil.WriteFile(t, filepath.Join(repo, "feature-a.txt"), "feature a\n")
+	testutil.Run(t, repo, "git", "add", "feature-a.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "add feature a")
+	testutil.Run(t, repo, "git", "push", "-u", "origin", "feature/a")
+	staleHead := strings.TrimSpace(testutil.Run(t, repo, "git", "rev-parse", "feature/a"))
+	testutil.Run(t, repo, "git", "switch", "main")
+
+	otherClone := filepath.Join(t.TempDir(), "other-clone")
+	testutil.Run(t, "", "git", "clone", remote, otherClone)
+	testutil.Run(t, otherClone, "git", "switch", "feature/a")
+	testutil.WriteFile(t, filepath.Join(otherClone, "feature-a.txt"), "feature a advanced\n")
+	testutil.Run(t, otherClone, "git", "add", "feature-a.txt")
+	testutil.Run(t, otherClone, "git", "commit", "-m", "advance feature a")
+	testutil.Run(t, otherClone, "git", "push", "origin", "feature/a")
+	freshHead := strings.TrimSpace(testutil.Run(t, otherClone, "git", "rev-parse", "feature/a"))
+
+	runtime := newTestRuntime(repo)
+	mainHead, err := runtime.Git.ResolveRef(runtime.Context, "main")
+	if err != nil {
+		t.Fatalf("resolve main head: %v", err)
+	}
+	state := store.RepoState{
+		Version:       1,
+		Repo:          "hack-dance/stack",
+		DefaultRemote: "origin",
+		Trunk:         "main",
+		Branches:      map[string]store.BranchRecord{},
+	}
+	if err := runtime.Store.WriteState(runtime.Context, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	ghStub := testutil.SetupGHStub(t, "hack-dance/stack", "main")
+	t.Setenv("STACK_TEST_GH_STATE", ghStub.StatePath)
+	t.Setenv("STACK_TEST_GH_LOG", ghStub.LogPath)
+	t.Setenv("PATH", ghStub.Dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	writeGHState(t, ghStub.StatePath, `{
+  "repo": {
+    "nameWithOwner": "hack-dance/stack",
+    "url": "https://github.com/hack-dance/stack",
+    "defaultBranchRef": { "name": "main" }
+  },
+  "prs": {
+    "7": {
+      "id": "PR_7",
+      "number": 7,
+      "url": "https://example.com/hack-dance/stack/pull/7",
+      "repo": "hack-dance/stack",
+      "headRefName": "feature/a",
+      "baseRefName": "main",
+      "headRefOid": "`+freshHead+`",
+      "baseRefOid": "`+mainHead+`",
+      "state": "OPEN",
+      "isDraft": false
+    }
+  },
+  "next_number": 8
+}`)
+
+	output := executeCommand(t, runtime, "adopt", "pr", "7", "--parent", "main", "--yes")
+	if !strings.Contains(output, "refreshed: origin/feature/a") {
+		t.Fatalf("expected refresh output, got %q", output)
+	}
+
+	currentHead := strings.TrimSpace(testutil.Run(t, repo, "git", "rev-parse", "feature/a"))
+	if currentHead != freshHead {
+		t.Fatalf("expected local feature/a head %q after adopt refresh, got %q (stale was %q)", freshHead, currentHead, staleHead)
+	}
+
+	state, err = runtime.Store.ReadState(runtime.Context)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	record := state.Branches["feature/a"]
+	if record.PR.Number != 7 {
+		t.Fatalf("expected tracked PR #7, got %+v", record.PR)
+	}
+	if record.Restack.LastParentHeadOID != mainHead {
+		t.Fatalf("expected restack anchor %q, got %q", mainHead, record.Restack.LastParentHeadOID)
+	}
+}
+
 func TestComposeCreatesLandingBranchFromTrackedRange(t *testing.T) {
 	repo := testutil.SetupGitRepo(t)
 
@@ -1440,6 +1531,88 @@ func TestComposeOpenPRCreatesLandingPRAndStoresTickets(t *testing.T) {
 	ghState := readFile(t, ghStub.StatePath)
 	if !strings.Contains(ghState, `"headRefName": "stack/discovery-core"`) || !strings.Contains(ghState, `"title": "Landing: LNHACK-66, LNHACK-67"`) {
 		t.Fatalf("expected landing PR to be created in gh state, got %q", ghState)
+	}
+}
+
+func TestComposeOpenPRPersistsLandingMetadataBeforePROperations(t *testing.T) {
+	repo := testutil.SetupGitRepo(t)
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	testutil.Run(t, repo, "git", "init", "--bare", remote)
+	testutil.Run(t, repo, "git", "remote", "add", "origin", remote)
+	testutil.Run(t, repo, "git", "push", "-u", "origin", "main")
+
+	testutil.Run(t, repo, "git", "switch", "-c", "feature/a")
+	testutil.WriteFile(t, filepath.Join(repo, "feature-a.txt"), "feature a\n")
+	testutil.Run(t, repo, "git", "add", "feature-a.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "add feature a")
+	featureAHead := strings.TrimSpace(testutil.Run(t, repo, "git", "rev-parse", "feature/a"))
+
+	testutil.Run(t, repo, "git", "switch", "-c", "feature/b")
+	testutil.WriteFile(t, filepath.Join(repo, "feature-b.txt"), "feature b\n")
+	testutil.Run(t, repo, "git", "add", "feature-b.txt")
+	testutil.Run(t, repo, "git", "commit", "-m", "add feature b")
+
+	runtime := newTestRuntime(repo)
+	mainHead, err := runtime.Git.ResolveRef(runtime.Context, "main")
+	if err != nil {
+		t.Fatalf("resolve main head: %v", err)
+	}
+	state := store.RepoState{
+		Version:       1,
+		Repo:          "hack-dance/stack",
+		DefaultRemote: "origin",
+		Trunk:         "main",
+		Branches: map[string]store.BranchRecord{
+			"feature/a": {
+				ParentBranch: "main",
+				RemoteName:   "origin",
+				Restack: store.RestackMetadata{
+					LastParentHeadOID: mainHead,
+				},
+			},
+			"feature/b": {
+				ParentBranch: "feature/a",
+				RemoteName:   "origin",
+				Restack: store.RestackMetadata{
+					LastParentHeadOID: featureAHead,
+				},
+			},
+		},
+	}
+	if err := runtime.Store.WriteState(runtime.Context, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	failDir := t.TempDir()
+	failGH := filepath.Join(failDir, "gh")
+	testutil.WriteFile(t, failGH, "#!/bin/sh\necho \"forced gh failure\" >&2\nexit 1\n")
+	testutil.Run(t, "", "chmod", "+x", failGH)
+	t.Setenv("PATH", failDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err = executeCommandExpectError(runtime, "compose", "discovery-core", "--from", "feature/a", "--to", "feature/b", "--ticket", "LNHACK-66", "--open-pr", "--yes")
+	if err == nil || !strings.Contains(err.Error(), "forced gh failure") {
+		t.Fatalf("expected gh failure during compose --open-pr, got %v", err)
+	}
+
+	state, err = runtime.Store.ReadState(runtime.Context)
+	if err != nil {
+		t.Fatalf("read state after failed compose: %v", err)
+	}
+	landing, ok := state.Landings["stack/discovery-core"]
+	if !ok {
+		t.Fatalf("expected landing metadata to be recorded before PR operations fail")
+	}
+	if got := strings.Join(landing.Tickets, ","); got != "LNHACK-66" {
+		t.Fatalf("unexpected landing tickets %q", got)
+	}
+	if landing.LandingPRNumber != 0 {
+		t.Fatalf("expected landing PR number to remain unset after failure, got %+v", landing)
+	}
+	if !runtime.Git.BranchExists(runtime.Context, "stack/discovery-core") {
+		t.Fatalf("expected landing branch to exist locally after failed PR open")
+	}
+	if !runtime.Git.RemoteBranchExists(runtime.Context, "origin", "stack/discovery-core") {
+		t.Fatalf("expected landing branch to be pushed before gh failure")
 	}
 }
 

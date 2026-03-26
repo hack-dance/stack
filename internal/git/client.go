@@ -170,6 +170,12 @@ func (c *Client) FetchBranch(ctx context.Context, remote string, sourceBranch st
 	return err
 }
 
+func (c *Client) FetchBranchForce(ctx context.Context, remote string, sourceBranch string, localBranch string) error {
+	refspec := fmt.Sprintf("+refs/heads/%s:refs/heads/%s", sourceBranch, localBranch)
+	_, err := c.run(ctx, "fetch", remote, refspec)
+	return err
+}
+
 func (c *Client) PushBranch(ctx context.Context, remote string, branch string, expectedRemoteOID string) error {
 	args := []string{"push"}
 	if expectedRemoteOID != "" {
