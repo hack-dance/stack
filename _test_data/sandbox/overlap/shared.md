@@ -6,6 +6,6 @@ Parent branch owns this section and introduces the file.
 
 ## Section B
 
-This section will be edited by the child branch.
+Child branch rewrites this section to create same-file stacked diffs without a guaranteed merge conflict.
 
-Marker: 00e3fde
+Marker: 17a0f9c
