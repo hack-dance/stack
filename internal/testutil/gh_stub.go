@@ -121,6 +121,20 @@ if args[:2] == ["pr", "merge"]:
     save()
     sys.exit(0)
 
+if args[:2] == ["pr", "comment"]:
+    number = args[2]
+    pr = state.get("prs", {}).get(str(number))
+    if pr is None:
+        print(f"unknown pr {number}", file=sys.stderr)
+        sys.exit(1)
+    body = find_flag(args, "--body", "")
+    comments = pr.get("comments", [])
+    comments.append(body)
+    pr["comments"] = comments
+    state["prs"][str(number)] = pr
+    save()
+    sys.exit(0)
+
 print("unsupported gh invocation", " ".join(args), file=sys.stderr)
 sys.exit(1)
 `

@@ -24,28 +24,46 @@ type HealthIssue struct {
 }
 
 type BranchSummary struct {
-	Name            string             `json:"name"`
-	Parent          string             `json:"parent"`
-	Depth           int                `json:"depth"`
-	CurrentHeadOID  string             `json:"currentHeadOid,omitempty"`
-	ParentHeadOID   string             `json:"parentHeadOid,omitempty"`
-	RemoteExists    bool               `json:"remoteExists"`
-	ParentAncestor  bool               `json:"parentAncestor"`
-	LocalExists     bool               `json:"localExists"`
-	ParentExists    bool               `json:"parentExists"`
-	IsCurrentBranch bool               `json:"isCurrentBranch"`
-	Issues          []HealthIssue      `json:"issues"`
-	Record          store.BranchRecord `json:"record"`
+	Name            string               `json:"name"`
+	Parent          string               `json:"parent"`
+	Depth           int                  `json:"depth"`
+	CurrentHeadOID  string               `json:"currentHeadOid,omitempty"`
+	ParentHeadOID   string               `json:"parentHeadOid,omitempty"`
+	RemoteExists    bool                 `json:"remoteExists"`
+	ParentAncestor  bool                 `json:"parentAncestor"`
+	LocalExists     bool                 `json:"localExists"`
+	ParentExists    bool                 `json:"parentExists"`
+	IsCurrentBranch bool                 `json:"isCurrentBranch"`
+	Verification    *VerificationSummary `json:"verification,omitempty"`
+	Issues          []HealthIssue        `json:"issues"`
+	Record          store.BranchRecord   `json:"record"`
+}
+
+type LandingBranchSummary struct {
+	Name            string               `json:"name"`
+	CurrentHeadOID  string               `json:"currentHeadOid,omitempty"`
+	RemoteExists    bool                 `json:"remoteExists"`
+	LocalExists     bool                 `json:"localExists"`
+	IsCurrentBranch bool                 `json:"isCurrentBranch"`
+	Verification    *VerificationSummary `json:"verification,omitempty"`
+	Issues          []HealthIssue        `json:"issues"`
+}
+
+type VerificationSummary struct {
+	Count              int                      `json:"count"`
+	Latest             store.VerificationRecord `json:"latest"`
+	HeadMatchesCurrent bool                     `json:"headMatchesCurrent"`
 }
 
 type Summary struct {
-	RepoRoot       string          `json:"repoRoot"`
-	Trunk          string          `json:"trunk"`
-	DefaultRemote  string          `json:"defaultRemote"`
-	CurrentBranch  string          `json:"currentBranch,omitempty"`
-	RepoIssues     []HealthIssue   `json:"repoIssues,omitempty"`
-	UntrackedHeads []string        `json:"untrackedHeads,omitempty"`
-	Branches       []BranchSummary `json:"branches"`
+	RepoRoot        string                 `json:"repoRoot"`
+	Trunk           string                 `json:"trunk"`
+	DefaultRemote   string                 `json:"defaultRemote"`
+	CurrentBranch   string                 `json:"currentBranch,omitempty"`
+	RepoIssues      []HealthIssue          `json:"repoIssues,omitempty"`
+	UntrackedHeads  []string               `json:"untrackedHeads,omitempty"`
+	Branches        []BranchSummary        `json:"branches"`
+	LandingBranches []LandingBranchSummary `json:"landingBranches,omitempty"`
 }
 
 func BuildSummary(ctx context.Context, git *stackgit.Client, state store.RepoState) (Summary, error) {
@@ -77,6 +95,7 @@ func BuildSummary(ctx context.Context, git *stackgit.Client, state store.RepoSta
 				summary.CurrentHeadOID = headOID
 			}
 		}
+		summary.Verification = buildVerificationSummary(state.Verifications[branchName], summary.CurrentHeadOID)
 
 		if record.ParentBranch == state.Trunk || summary.ParentExists {
 			parentOID, err := git.ResolveRef(ctx, record.ParentBranch)
@@ -170,18 +189,97 @@ func BuildSummary(ctx context.Context, git *stackgit.Client, state store.RepoSta
 				})
 			}
 		}
+		appendVerificationIssues(branchName, &summary.Issues, summary.Verification)
 
 		branches = append(branches, summary)
 	}
 
+	landingBranches := buildLandingSummaries(ctx, git, state, strings.TrimSpace(currentBranch))
+
 	return Summary{
-		RepoRoot:      paths.Root,
-		Trunk:         state.Trunk,
-		DefaultRemote: state.DefaultRemote,
-		CurrentBranch: strings.TrimSpace(currentBranch),
-		RepoIssues:    validation.RepoIssues,
-		Branches:      branches,
+		RepoRoot:        paths.Root,
+		Trunk:           state.Trunk,
+		DefaultRemote:   state.DefaultRemote,
+		CurrentBranch:   strings.TrimSpace(currentBranch),
+		RepoIssues:      validation.RepoIssues,
+		Branches:        branches,
+		LandingBranches: landingBranches,
 	}, nil
+}
+
+func buildLandingSummaries(ctx context.Context, git *stackgit.Client, state store.RepoState, currentBranch string) []LandingBranchSummary {
+	names := make([]string, 0)
+	for branchName := range state.Verifications {
+		if _, tracked := state.Branches[branchName]; tracked {
+			continue
+		}
+		names = append(names, branchName)
+	}
+	sort.Strings(names)
+
+	landingBranches := make([]LandingBranchSummary, 0, len(names))
+	for _, branchName := range names {
+		summary := LandingBranchSummary{
+			Name:            branchName,
+			LocalExists:     git.BranchExists(ctx, branchName),
+			RemoteExists:    git.RemoteBranchExists(ctx, state.DefaultRemote, branchName),
+			IsCurrentBranch: currentBranch == branchName,
+		}
+		if summary.LocalExists {
+			headOID, err := git.ResolveRef(ctx, branchName)
+			if err == nil {
+				summary.CurrentHeadOID = headOID
+			}
+		}
+		summary.Verification = buildVerificationSummary(state.Verifications[branchName], summary.CurrentHeadOID)
+
+		if !summary.LocalExists {
+			summary.Issues = append(summary.Issues, HealthIssue{
+				Severity: SeverityWarn,
+				Message:  "landing branch is missing locally; recreate or repair it before relying on stored verification",
+			})
+		}
+		if summary.LocalExists && !summary.RemoteExists {
+			summary.Issues = append(summary.Issues, HealthIssue{
+				Severity: SeverityInfo,
+				Message:  "landing branch has not been pushed yet; push it when you are ready to open or update the landing PR",
+			})
+		}
+		appendVerificationIssues(branchName, &summary.Issues, summary.Verification)
+		landingBranches = append(landingBranches, summary)
+	}
+
+	return landingBranches
+}
+
+func buildVerificationSummary(records []store.VerificationRecord, currentHeadOID string) *VerificationSummary {
+	if len(records) == 0 {
+		return nil
+	}
+	latest := records[len(records)-1]
+	return &VerificationSummary{
+		Count:              len(records),
+		Latest:             latest,
+		HeadMatchesCurrent: latest.HeadOID != "" && currentHeadOID != "" && latest.HeadOID == currentHeadOID,
+	}
+}
+
+func appendVerificationIssues(branchName string, issues *[]HealthIssue, verification *VerificationSummary) {
+	if verification == nil {
+		return
+	}
+	if !verification.Latest.Passed {
+		*issues = append(*issues, HealthIssue{
+			Severity: SeverityWarn,
+			Message:  fmt.Sprintf("latest %s verification failed; inspect `stack verify list %s` before landing", verification.Latest.CheckType, branchName),
+		})
+	}
+	if !verification.HeadMatchesCurrent {
+		*issues = append(*issues, HealthIssue{
+			Severity: SeverityWarn,
+			Message:  "branch head moved since the latest recorded verification; rerun or record fresh verification before landing",
+		})
+	}
 }
 
 func topoOrder(state store.RepoState) []string {

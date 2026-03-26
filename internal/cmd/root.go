@@ -3,7 +3,10 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"os"
+	"io"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,7 +34,7 @@ to GitHub merge queue via the gh CLI.
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runStatus(runtime, false)
+			return runStatus(runtime, false, cmd.OutOrStdout())
 		},
 	}
 
@@ -43,6 +46,11 @@ to GitHub merge queue via the gh CLI.
 		newInitCommand(runtime),
 		newCreateCommand(runtime),
 		newTrackCommand(runtime),
+		newAdoptCommand(runtime),
+		newComposeCommand(runtime),
+		newVerifyCommand(runtime),
+		newCloseoutCommand(runtime),
+		newSupersedeCommand(runtime),
 		newStatusCommand(runtime),
 		newVersionCommand(),
 		newTUICommand(runtime),
@@ -60,7 +68,7 @@ to GitHub merge queue via the gh CLI.
 		Short:  "Alias for `stack status`",
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runStatus(runtime, false)
+			return runStatus(runtime, false, cmd.OutOrStdout())
 		},
 	})
 
@@ -249,6 +257,530 @@ func newTrackCommand(runtime *stackruntime.Runtime) *cobra.Command {
 	return cmd
 }
 
+func newAdoptCommand(runtime *stackruntime.Runtime) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "adopt",
+		Short: "Adopt existing pull requests into explicit stack metadata",
+		Long:  "Use explicit operator-chosen parents to adopt existing PR heads into the local stack graph.",
+	}
+
+	cmd.AddCommand(newAdoptPRCommand(runtime))
+	return cmd
+}
+
+func newAdoptPRCommand(runtime *stackruntime.Runtime) *cobra.Command {
+	var parent string
+	var yes bool
+
+	cmd := &cobra.Command{
+		Use:   "pr <number>",
+		Short: "Adopt one open pull request into the stack graph",
+		Long:  "Look up one open pull request, optionally fetch its head branch locally, then track it under an explicit parent branch.",
+		Example: strings.TrimSpace(`
+stack adopt pr 353 --parent main
+stack adopt pr 354 --parent pr/353 --yes
+		`),
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if parent == "" {
+				return fmt.Errorf("--parent is required")
+			}
+
+			prNumber, err := strconv.Atoi(args[0])
+			if err != nil || prNumber <= 0 {
+				return fmt.Errorf("invalid pull request number %q", args[0])
+			}
+
+			state, err := runtime.Store.ReadState(runtime.Context)
+			if err != nil {
+				return err
+			}
+			if err := ensureStateWritable(state); err != nil {
+				return err
+			}
+			if err := ensureNoPendingOperation(runtime); err != nil {
+				return err
+			}
+
+			if parent != state.Trunk && !runtime.Git.BranchExists(runtime.Context, parent) {
+				return fmt.Errorf("parent branch %q does not exist locally", parent)
+			}
+			if err := ensureTrackedParentAllowed(state, parent); err != nil {
+				return err
+			}
+
+			pr, err := runtime.GitHub.ViewPR(runtime.Context, prNumber)
+			if err != nil {
+				return err
+			}
+			if pr.State != "" && pr.State != "OPEN" {
+				return fmt.Errorf("pull request #%d is %s; only open PRs can be adopted", prNumber, strings.ToLower(pr.State))
+			}
+
+			branch := strings.TrimSpace(pr.HeadRefName)
+			if branch == "" {
+				return fmt.Errorf("pull request #%d has no head branch name", prNumber)
+			}
+			if _, exists := state.Branches[branch]; exists {
+				return fmt.Errorf("branch %q is already tracked", branch)
+			}
+			if err := stack.EnsureBranchCanParent(state, branch, parent); err != nil {
+				return err
+			}
+
+			needsFetch := !runtime.Git.BranchExists(runtime.Context, branch)
+			preview := []string{
+				fmt.Sprintf("pr: #%d", pr.Number),
+				fmt.Sprintf("branch: %s", branch),
+				fmt.Sprintf("parent: %s", parent),
+			}
+			if needsFetch {
+				preview = append(preview, fmt.Sprintf("fetch: %s/%s -> %s", state.DefaultRemote, branch, branch))
+			}
+			if pr.BaseRefName != "" && pr.BaseRefName != parent {
+				preview = append(preview, fmt.Sprintf("note: PR #%d currently targets %s; `stack submit %s` will retarget it later", pr.Number, pr.BaseRefName, branch))
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), ui.RenderPreview("Adopt PR preview", preview))
+
+			if !yes {
+				confirmed, err := forms.Confirm("Adopt pull request", "This may fetch a remote branch head and will update local stack metadata.")
+				if err != nil {
+					return err
+				}
+				if !confirmed {
+					return fmt.Errorf("adopt cancelled")
+				}
+			}
+
+			if needsFetch {
+				if err := runtime.Git.FetchBranch(runtime.Context, state.DefaultRemote, branch, branch); err != nil {
+					return fmt.Errorf("fetch pull request #%d head %q from %s: %w", pr.Number, branch, state.DefaultRemote, err)
+				}
+			}
+
+			parentOID, usedMergeBase, err := trackRestackAnchorDetail(runtime, branch, parent)
+			if err != nil {
+				return err
+			}
+
+			record := store.BranchRecord{
+				ParentBranch: parent,
+				RemoteName:   state.DefaultRemote,
+				PR:           pr,
+				Restack: store.RestackMetadata{
+					LastParentHeadOID: parentOID,
+				},
+			}
+			plannedState := cloneRepoState(state)
+			plannedState.Branches[branch] = record
+			if err := ensureStateWritable(plannedState); err != nil {
+				return err
+			}
+			if err := runtime.Store.WriteState(runtime.Context, plannedState); err != nil {
+				return err
+			}
+
+			lines := []string{
+				fmt.Sprintf("branch: %s", branch),
+				fmt.Sprintf("parent: %s", parent),
+				fmt.Sprintf("pr: #%d", pr.Number),
+			}
+			if needsFetch {
+				lines = append(lines, fmt.Sprintf("fetched: %s/%s", state.DefaultRemote, branch))
+			}
+			if usedMergeBase {
+				lines = append(lines, "restack anchor: merge-base with the selected parent")
+			} else {
+				lines = append(lines, "restack anchor: current parent head")
+			}
+			if pr.BaseRefName != "" && pr.BaseRefName != parent {
+				lines = append(lines, fmt.Sprintf("next: run `stack submit %s` when you want GitHub to target %s", branch, parent))
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), ui.RenderPreview("Adopted pull request", lines))
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&parent, "parent", "", "Parent branch or trunk")
+	cmd.Flags().BoolVar(&yes, "yes", false, "Skip confirmation")
+	return cmd
+}
+
+func newComposeCommand(runtime *stackruntime.Runtime) *cobra.Command {
+	var branches []string
+	var from string
+	var to string
+	var yes bool
+
+	cmd := &cobra.Command{
+		Use:   "compose <name>",
+		Short: "Compose a strict landing branch from selected tracked branches",
+		Long:  "Create one ordinary local landing branch from an explicit linear branch selection and replay only the selected commits in order.",
+		Example: strings.TrimSpace(`
+stack compose discovery-core --from feature/a --to feature/c
+stack compose discovery-core --branches feature/a --branches feature/b --yes
+		`),
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			state, err := runtime.Store.ReadState(runtime.Context)
+			if err != nil {
+				return err
+			}
+			if err := ensureStateWritable(state); err != nil {
+				return err
+			}
+			if err := ensureNoPendingOperation(runtime); err != nil {
+				return err
+			}
+
+			selectedBranches, err := resolveComposeBranches(state, branches, from, to)
+			if err != nil {
+				return err
+			}
+
+			plan, err := buildComposePlan(runtime, state, composeDestinationBranch(args[0]), selectedBranches)
+			if err != nil {
+				return err
+			}
+
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), ui.RenderPreview("Compose preview", renderComposePreview(plan)))
+
+			if !yes {
+				confirmed, err := forms.Confirm("Compose landing branch", "This creates a new local branch and cherry-picks the selected commits onto trunk.")
+				if err != nil {
+					return err
+				}
+				if !confirmed {
+					return fmt.Errorf("compose cancelled")
+				}
+			}
+
+			if err := runtime.Git.SwitchCreateFrom(runtime.Context, plan.Destination, plan.Base); err != nil {
+				return err
+			}
+
+			for _, branchPlan := range plan.Branches {
+				for _, commit := range branchPlan.Commits {
+					if err := runtime.Git.CherryPick(runtime.Context, commit.OID); err != nil {
+						return fmt.Errorf("compose stopped while replaying %s from %s onto %s: %w; inspect %s, resolve the cherry-pick, or run `git cherry-pick --abort` manually", shortOID(commit.OID), branchPlan.Name, plan.Destination, err, plan.Destination)
+					}
+				}
+			}
+
+			state.Landings[plan.Destination] = store.LandingRecord{
+				BaseBranch:     plan.Base,
+				SourceBranches: append([]string(nil), selectedBranches...),
+				CreatedAt:      time.Now().UTC().Format(time.RFC3339),
+			}
+			if err := runtime.Store.WriteState(runtime.Context, state); err != nil {
+				return err
+			}
+
+			lines := []string{
+				fmt.Sprintf("branch: %s", plan.Destination),
+				fmt.Sprintf("base: %s", plan.Base),
+				fmt.Sprintf("replayed commits: %d", plan.CommitCount()),
+			}
+			lines = append(lines, plan.Warnings...)
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), ui.RenderPreview("Composed landing branch", lines))
+			return nil
+		},
+	}
+
+	cmd.Flags().StringArrayVar(&branches, "branches", nil, "Tracked branches to include in explicit order")
+	cmd.Flags().StringVar(&from, "from", "", "Bottom branch of a contiguous tracked path")
+	cmd.Flags().StringVar(&to, "to", "", "Top branch of a contiguous tracked path")
+	cmd.Flags().BoolVar(&yes, "yes", false, "Skip confirmation")
+	return cmd
+}
+
+func newVerifyCommand(runtime *stackruntime.Runtime) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "verify",
+		Short: "Attach and inspect lightweight verification records",
+		Long:  "Store local-first verification evidence for tracked branches or composed landing branches.",
+	}
+
+	cmd.AddCommand(
+		newVerifyAddCommand(runtime),
+		newVerifyListCommand(runtime),
+	)
+	return cmd
+}
+
+func newVerifyAddCommand(runtime *stackruntime.Runtime) *cobra.Command {
+	var checkType string
+	var identifier string
+	var runID string
+	var note string
+	var score int
+	var passed bool
+	var failed bool
+
+	cmd := &cobra.Command{
+		Use:   "add <branch>",
+		Short: "Record one verification result for a branch",
+		Long:  "Record local verification evidence against the current head of a tracked branch or composed landing branch.",
+		Example: strings.TrimSpace(`
+stack verify add stack/discovery-core --type sim --run-id abc123 --passed --score 100
+stack verify add feature/a --type manual --identifier smoke-check-42 --failed --note "deploy blocked"
+		`),
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			branch := strings.TrimSpace(args[0])
+			if branch == "" {
+				return fmt.Errorf("branch is required")
+			}
+			if strings.TrimSpace(checkType) == "" {
+				return fmt.Errorf("--type is required")
+			}
+			if passed == failed {
+				return fmt.Errorf("set exactly one of --passed or --failed")
+			}
+			if strings.TrimSpace(identifier) != "" && strings.TrimSpace(runID) != "" {
+				return fmt.Errorf("use either --identifier or --run-id, not both")
+			}
+
+			state, err := runtime.Store.ReadState(runtime.Context)
+			if err != nil {
+				return err
+			}
+			if !runtime.Git.BranchExists(runtime.Context, branch) {
+				return fmt.Errorf("branch %q does not exist locally", branch)
+			}
+
+			headOID, err := runtime.Git.ResolveRef(runtime.Context, branch)
+			if err != nil {
+				return err
+			}
+
+			resolvedIdentifier := strings.TrimSpace(identifier)
+			if resolvedIdentifier == "" {
+				resolvedIdentifier = strings.TrimSpace(runID)
+			}
+
+			record := store.VerificationRecord{
+				CheckType:  strings.TrimSpace(checkType),
+				Identifier: resolvedIdentifier,
+				Passed:     passed,
+				HeadOID:    headOID,
+				RecordedAt: time.Now().UTC().Format(time.RFC3339),
+				Note:       strings.TrimSpace(note),
+			}
+			if cmd.Flags().Changed("score") {
+				record.Score = &score
+			}
+
+			state.Verifications[branch] = append(state.Verifications[branch], record)
+			if err := runtime.Store.WriteState(runtime.Context, state); err != nil {
+				return err
+			}
+
+			lines := []string{
+				fmt.Sprintf("branch: %s", branch),
+				fmt.Sprintf("type: %s", record.CheckType),
+				fmt.Sprintf("result: %s", verificationResult(record)),
+				fmt.Sprintf("head: %s", shortOID(record.HeadOID)),
+			}
+			if record.Identifier != "" {
+				lines = append(lines, fmt.Sprintf("identifier: %s", record.Identifier))
+			}
+			if record.Score != nil {
+				lines = append(lines, fmt.Sprintf("score: %d", *record.Score))
+			}
+			if record.Note != "" {
+				lines = append(lines, fmt.Sprintf("note: %s", record.Note))
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), ui.RenderPreview("Verification recorded", lines))
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&checkType, "type", "", "Verification type such as sim, unit, integration, manual, deploy, or smoke")
+	cmd.Flags().StringVar(&identifier, "identifier", "", "Verification identifier such as a run id, URL, or external check reference")
+	cmd.Flags().StringVar(&runID, "run-id", "", "Convenience alias for --identifier when recording a run id")
+	cmd.Flags().StringVar(&note, "note", "", "Optional operator note")
+	cmd.Flags().IntVar(&score, "score", 0, "Optional numeric score")
+	cmd.Flags().BoolVar(&passed, "passed", false, "Mark the verification as passed")
+	cmd.Flags().BoolVar(&failed, "failed", false, "Mark the verification as failed")
+	return cmd
+}
+
+func newVerifyListCommand(runtime *stackruntime.Runtime) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "list <branch>",
+		Short: "List stored verification records for a branch",
+		Long:  "Show local verification evidence stored for a tracked branch or composed landing branch.",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			branch := strings.TrimSpace(args[0])
+			state, err := runtime.Store.ReadState(runtime.Context)
+			if err != nil {
+				return err
+			}
+
+			records := append([]store.VerificationRecord(nil), state.Verifications[branch]...)
+			if len(records) == 0 {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), ui.RenderPreview("Verification records", []string{
+					fmt.Sprintf("branch: %s", branch),
+					"no verification records stored",
+				}))
+				return nil
+			}
+
+			lines := []string{fmt.Sprintf("branch: %s", branch)}
+			for index := len(records) - 1; index >= 0; index-- {
+				record := records[index]
+				line := fmt.Sprintf("%s  %s  %s", record.RecordedAt, record.CheckType, verificationResult(record))
+				if record.Identifier != "" {
+					line += fmt.Sprintf("  %s", record.Identifier)
+				}
+				lines = append(lines, line)
+				lines = append(lines, fmt.Sprintf("  head: %s", shortOID(record.HeadOID)))
+				if record.Score != nil {
+					lines = append(lines, fmt.Sprintf("  score: %d", *record.Score))
+				}
+				if record.Note != "" {
+					lines = append(lines, fmt.Sprintf("  note: %s", record.Note))
+				}
+			}
+
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), ui.RenderPreview("Verification records", lines))
+			return nil
+		},
+	}
+
+	return cmd
+}
+
+func newCloseoutCommand(runtime *stackruntime.Runtime) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "closeout <landing-branch>",
+		Short: "Plan read-only post-merge closeout for a landing branch",
+		Long:  "Use recorded landing composition, pull request state, and verification records to show which original PRs and inferred tickets are safe to close now versus still blocked on deploy checks.",
+		Example: strings.TrimSpace(`
+stack closeout stack/discovery-core
+		`),
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			state, err := runtime.Store.ReadState(runtime.Context)
+			if err != nil {
+				return err
+			}
+
+			plan, err := buildCloseoutPlan(runtime, state, strings.TrimSpace(args[0]))
+			if err != nil {
+				return err
+			}
+
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), ui.RenderPreview("Closeout plan", renderCloseoutPlan(plan)))
+			return nil
+		},
+	}
+
+	return cmd
+}
+
+func newSupersedeCommand(runtime *stackruntime.Runtime) *cobra.Command {
+	var landingBranch string
+	var prValues []string
+	var noComment bool
+	var yes bool
+
+	cmd := &cobra.Command{
+		Use:   "supersede",
+		Short: "Mark original PRs as superseded by a landing PR",
+		Long:  "Record explicit superseded PR linkage in local landing metadata and optionally comment on the original PRs with the landing PR reference.",
+		Example: strings.TrimSpace(`
+stack supersede --landing stack/discovery-core --prs 353,354,363,364
+stack supersede --landing stack/discovery-core --prs 353 --prs 354 --no-comment --yes
+		`),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if strings.TrimSpace(landingBranch) == "" {
+				return fmt.Errorf("--landing is required")
+			}
+
+			prNumbers, err := parsePRNumbers(prValues)
+			if err != nil {
+				return err
+			}
+			if len(prNumbers) == 0 {
+				return fmt.Errorf("at least one PR number is required via --prs")
+			}
+
+			state, err := runtime.Store.ReadState(runtime.Context)
+			if err != nil {
+				return err
+			}
+
+			plan, err := buildSupersedePlan(runtime, state, strings.TrimSpace(landingBranch), prNumbers)
+			if err != nil {
+				return err
+			}
+
+			lines := []string{
+				fmt.Sprintf("landing branch: %s", plan.LandingBranch),
+				fmt.Sprintf("landing PR: #%d", plan.LandingPR.Number),
+			}
+			for _, pr := range plan.SupersededPRs {
+				lines = append(lines, fmt.Sprintf("superseded PR: #%d %s", pr.Number, strings.ToLower(pr.State)))
+			}
+			if noComment {
+				lines = append(lines, "comments: skipped by --no-comment")
+			} else {
+				lines = append(lines, fmt.Sprintf("comments: %d GitHub PR comments will be posted", len(plan.SupersededPRs)))
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), ui.RenderPreview("Supersede preview", lines))
+
+			if !yes {
+				confirmed, err := forms.Confirm("Supersede PRs", "This records superseded PR linkage locally and may post comments on GitHub.")
+				if err != nil {
+					return err
+				}
+				if !confirmed {
+					return fmt.Errorf("supersede cancelled")
+				}
+			}
+
+			landing := state.Landings[plan.LandingBranch]
+			landing.SupersededPRs = append([]int(nil), prNumbers...)
+			landing.SupersededAt = time.Now().UTC().Format(time.RFC3339)
+			state.Landings[plan.LandingBranch] = landing
+			if err := runtime.Store.WriteState(runtime.Context, state); err != nil {
+				return err
+			}
+
+			if !noComment {
+				body := fmt.Sprintf("This PR is superseded by landing PR #%d (%s) from `%s`.", plan.LandingPR.Number, plan.LandingPR.URL, plan.LandingBranch)
+				for _, pr := range plan.SupersededPRs {
+					if err := runtime.GitHub.CommentPR(runtime.Context, pr.Number, body); err != nil {
+						return err
+					}
+				}
+			}
+
+			result := []string{
+				fmt.Sprintf("landing branch: %s", plan.LandingBranch),
+				fmt.Sprintf("landing PR: #%d", plan.LandingPR.Number),
+				fmt.Sprintf("superseded PRs: %s", joinPRNumbers(prNumbers)),
+			}
+			if noComment {
+				result = append(result, "github comments: skipped")
+			} else {
+				result = append(result, "github comments: posted")
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), ui.RenderPreview("Superseded PRs recorded", result))
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&landingBranch, "landing", "", "Landing branch to use as the superseding target")
+	cmd.Flags().StringArrayVar(&prValues, "prs", nil, "Original PR numbers, comma-separated or repeated")
+	cmd.Flags().BoolVar(&noComment, "no-comment", false, "Record superseded linkage locally without posting GitHub comments")
+	cmd.Flags().BoolVar(&yes, "yes", false, "Skip confirmation")
+	return cmd
+}
+
 func newStatusCommand(runtime *stackruntime.Runtime) *cobra.Command {
 	var asJSON bool
 
@@ -261,7 +793,7 @@ stack status
 stack status --json
 		`),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runStatus(runtime, asJSON)
+			return runStatus(runtime, asJSON, cmd.OutOrStdout())
 		},
 	}
 
@@ -757,10 +1289,11 @@ func newQueueCommand(runtime *stackruntime.Runtime) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "queue <branch>",
-		Short: "Hand one healthy bottom-of-stack PR to GitHub auto-merge or merge queue",
-		Long:  "Validate that one tracked branch is ready for trunk handoff, then ask GitHub to auto-merge or enqueue the PR using the current head commit.",
+		Short: "Hand one verified trunk-bound PR or landing PR to GitHub auto-merge or merge queue",
+		Long:  "Validate that one tracked trunk branch or recorded landing branch is ready for handoff, then ask GitHub to auto-merge or enqueue the PR using the current head commit.",
 		Example: strings.TrimSpace(`
 stack queue feature/a
+stack queue stack/discovery-core
 stack queue feature/a --strategy squash
 stack queue feature/a --yes
 		`),
@@ -781,56 +1314,29 @@ stack queue feature/a --yes
 				return err
 			}
 
-			branch := args[0]
-			record, ok := state.Branches[branch]
-			if !ok {
-				return fmt.Errorf("branch %q is not tracked", branch)
-			}
-			if record.ParentBranch != state.Trunk {
-				return fmt.Errorf("branch %q must target trunk before queue handoff", branch)
-			}
-			if record.PR.Number == 0 {
-				return fmt.Errorf("branch %q has no tracked PR", branch)
-			}
-
-			headOID, err := runtime.Git.ResolveRef(runtime.Context, branch)
+			plan, err := buildQueuePlan(runtime, state, args[0])
 			if err != nil {
 				return err
 			}
-			remoteHeadOID, remoteExists, err := runtime.Git.RemoteBranchOID(runtime.Context, state.DefaultRemote, branch)
-			if err != nil {
-				return err
-			}
-			if !remoteExists {
-				return fmt.Errorf("branch %q has not been pushed to %s", branch, state.DefaultRemote)
-			}
-			if remoteHeadOID != headOID {
-				return fmt.Errorf("remote branch %q is stale; run `stack submit %s` before queue handoff", branch, branch)
-			}
 
-			record, err = refreshTrackedPR(runtime, state, branch, record)
-			if err != nil {
-				return err
-			}
-			if err := validateTrackedPR(branch, record); err != nil {
-				return err
-			}
-			if record.PR.BaseRefName != "" && record.PR.BaseRefName != state.Trunk {
-				return fmt.Errorf("PR for %q currently targets %q; run `stack submit %s` before queue handoff", branch, record.PR.BaseRefName, branch)
-			}
-			if record.PR.IsDraft {
-				return fmt.Errorf("branch %q is still a draft PR", branch)
-			}
-			if record.PR.LastSeenHeadOID != "" && record.PR.LastSeenHeadOID != headOID {
-				return fmt.Errorf("PR head for %q is stale; run `stack submit %s` before queue handoff", branch, branch)
-			}
-
-			_, _ = fmt.Fprintln(cmd.OutOrStdout(), ui.RenderPreview("Queue handoff", []string{
-				fmt.Sprintf("branch: %s", branch),
-				fmt.Sprintf("pr: #%d", record.PR.Number),
+			lines := []string{
+				fmt.Sprintf("branch: %s", plan.Branch),
+				fmt.Sprintf("pr: #%d", plan.PR.Number),
 				fmt.Sprintf("strategy: %s", strategy),
-				fmt.Sprintf("head: %s", headOID),
-			}))
+				fmt.Sprintf("head: %s", plan.HeadOID),
+			}
+			if plan.IsLanding {
+				lines = append(lines, "type: landing")
+			} else {
+				lines = append(lines, "type: tracked")
+			}
+			if plan.Verification != nil {
+				lines = append(lines, fmt.Sprintf("verification: %s", renderQueueVerification(*plan.Verification)))
+			}
+			if len(plan.ExcludedPRs) > 0 {
+				lines = append(lines, fmt.Sprintf("keep out of queue: %s", joinPRNumbers(plan.ExcludedPRs)))
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), ui.RenderPreview("Queue handoff", lines))
 
 			if !yes {
 				confirmed, err := forms.Confirm("Queue branch", "This hands the current PR head to GitHub auto-merge or merge queue.")
@@ -842,20 +1348,11 @@ stack queue feature/a --yes
 				}
 			}
 
-			if err := runtime.GitHub.MergePR(runtime.Context, record.PR.Number, headOID, strategy); err != nil {
+			if err := runtime.GitHub.MergePR(runtime.Context, plan.PR.Number, plan.HeadOID, strategy); err != nil {
 				return err
 			}
 
-			nextSteps := []string{
-				fmt.Sprintf("wait for GitHub to merge PR #%d", record.PR.Number),
-				"then run: stack sync",
-			}
-			children := stack.Children(state, branch)
-			if len(children) > 0 {
-				nextSteps = append(nextSteps, fmt.Sprintf("then run: stack submit %s", children[0]))
-				nextSteps = append(nextSteps, fmt.Sprintf("then run: stack queue %s", children[0]))
-			}
-			_, _ = fmt.Fprintln(cmd.OutOrStdout(), ui.RenderPreview("Next steps", nextSteps))
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), ui.RenderPreview("Next steps", plan.NextSteps))
 			return nil
 		},
 	}
@@ -874,7 +1371,7 @@ func isValidQueueStrategy(strategy string) bool {
 	}
 }
 
-func runStatus(runtime *stackruntime.Runtime, asJSON bool) error {
+func runStatus(runtime *stackruntime.Runtime, asJSON bool, writer io.Writer) error {
 	state, err := runtime.Store.ReadState(runtime.Context)
 	if err != nil {
 		return err
@@ -886,12 +1383,12 @@ func runStatus(runtime *stackruntime.Runtime, asJSON bool) error {
 	}
 
 	if asJSON {
-		encoder := json.NewEncoder(os.Stdout)
+		encoder := json.NewEncoder(writer)
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(summary)
 	}
 
-	_, _ = fmt.Fprintln(os.Stdout, ui.RenderStatus(summary))
+	_, _ = fmt.Fprintln(writer, ui.RenderStatus(summary))
 	return nil
 }
 
@@ -910,6 +1407,71 @@ type submitPRMetadata struct {
 	Body        string
 	TitleSource string
 	BodySource  string
+}
+
+type composePlan struct {
+	Destination string
+	Base        string
+	Branches    []composeBranchPlan
+	Warnings    []string
+}
+
+type composeBranchPlan struct {
+	Name    string
+	Parent  string
+	Commits []composeCommitPlan
+}
+
+type composeCommitPlan struct {
+	OID     string
+	Subject string
+}
+
+type closeoutPlan struct {
+	LandingBranch            string
+	BaseBranch               string
+	LandingPR                *store.PullRequest
+	LandingPRAmbiguous       []store.PullRequest
+	SourceBranches           []closeoutBranchPlan
+	TicketsSafeToClose       []string
+	TicketsPendingPostDeploy []string
+	SupersededNow            []string
+	SupersededPending        []string
+	FollowUps                []string
+}
+
+type closeoutBranchPlan struct {
+	Name string
+	PR   *store.PullRequest
+}
+
+type supersedePlan struct {
+	LandingBranch string
+	LandingPR     store.PullRequest
+	SupersededPRs []store.PullRequest
+}
+
+type queuePlan struct {
+	Branch       string
+	PR           store.PullRequest
+	HeadOID      string
+	IsLanding    bool
+	Verification *queueVerification
+	ExcludedPRs  []int
+	NextSteps    []string
+}
+
+type queueVerification struct {
+	Latest             store.VerificationRecord
+	HeadMatchesCurrent bool
+}
+
+func (plan composePlan) CommitCount() int {
+	total := 0
+	for _, branchPlan := range plan.Branches {
+		total += len(branchPlan.Commits)
+	}
+	return total
 }
 
 func buildSubmitPlan(runtime *stackruntime.Runtime, state store.RepoState, branch string) (submitPlan, error) {
@@ -998,6 +1560,731 @@ func resolveSubmitPRMetadata(runtime *stackruntime.Runtime, branch string, paren
 	}
 
 	return metadata, nil
+}
+
+func buildComposePlan(runtime *stackruntime.Runtime, state store.RepoState, destination string, branches []string) (composePlan, error) {
+	if len(branches) == 0 {
+		return composePlan{}, fmt.Errorf("compose needs at least one tracked branch")
+	}
+	if runtime.Git.BranchExists(runtime.Context, destination) {
+		return composePlan{}, fmt.Errorf("branch %q already exists locally", destination)
+	}
+	if !runtime.Git.BranchExists(runtime.Context, state.Trunk) {
+		return composePlan{}, fmt.Errorf("trunk branch %q does not exist locally", state.Trunk)
+	}
+
+	plan := composePlan{
+		Destination: destination,
+		Base:        state.Trunk,
+		Branches:    make([]composeBranchPlan, 0, len(branches)),
+	}
+
+	for index, branch := range branches {
+		record, ok := state.Branches[branch]
+		if !ok {
+			return composePlan{}, fmt.Errorf("branch %q is not tracked", branch)
+		}
+		if !runtime.Git.BranchExists(runtime.Context, branch) {
+			return composePlan{}, fmt.Errorf("branch %q does not exist locally", branch)
+		}
+		if record.ParentBranch != state.Trunk && !runtime.Git.BranchExists(runtime.Context, record.ParentBranch) {
+			return composePlan{}, fmt.Errorf("parent branch %q for %q does not exist locally", record.ParentBranch, branch)
+		}
+		if index > 0 && record.ParentBranch != branches[index-1] {
+			return composePlan{}, fmt.Errorf("compose branches must form a contiguous parent chain; expected %q to parent %q, got %q", branches[index-1], branch, record.ParentBranch)
+		}
+
+		commits, err := runtime.Git.RangeCommits(runtime.Context, record.ParentBranch, branch)
+		if err != nil {
+			return composePlan{}, err
+		}
+
+		branchPlan := composeBranchPlan{
+			Name:    branch,
+			Parent:  record.ParentBranch,
+			Commits: make([]composeCommitPlan, 0, len(commits)),
+		}
+		for _, commit := range commits {
+			branchPlan.Commits = append(branchPlan.Commits, composeCommitPlan{
+				OID:     commit.OID,
+				Subject: commit.Subject,
+			})
+		}
+		plan.Branches = append(plan.Branches, branchPlan)
+	}
+
+	firstParent := plan.Branches[0].Parent
+	if firstParent != state.Trunk {
+		plan.Warnings = append(plan.Warnings, fmt.Sprintf("warning: %s currently targets %s; compose will replay only its unique commits onto %s", plan.Branches[0].Name, firstParent, state.Trunk))
+	}
+	if plan.CommitCount() == 0 {
+		return composePlan{}, fmt.Errorf("selected branches have no unique commits to compose")
+	}
+
+	return plan, nil
+}
+
+func renderComposePreview(plan composePlan) []string {
+	lines := []string{
+		fmt.Sprintf("destination: %s", plan.Destination),
+		fmt.Sprintf("base: %s", plan.Base),
+	}
+	lines = append(lines, plan.Warnings...)
+
+	for _, branchPlan := range plan.Branches {
+		lines = append(lines, fmt.Sprintf("branch: %s (relative to %s)", branchPlan.Name, branchPlan.Parent))
+		if len(branchPlan.Commits) == 0 {
+			lines = append(lines, "  no unique commits")
+			continue
+		}
+
+		for _, commit := range branchPlan.Commits {
+			subject := commit.Subject
+			if subject == "" {
+				subject = "(empty subject)"
+			}
+			lines = append(lines, fmt.Sprintf("  %s %s", shortOID(commit.OID), subject))
+		}
+	}
+
+	lines = append(lines, fmt.Sprintf("total commits: %d", plan.CommitCount()))
+	return lines
+}
+
+func resolveComposeBranches(state store.RepoState, explicit []string, from string, to string) ([]string, error) {
+	if len(explicit) > 0 {
+		if from != "" || to != "" {
+			return nil, fmt.Errorf("use either --branches or --from/--to, not both")
+		}
+		return validateComposeExplicitBranches(state, explicit)
+	}
+
+	if from == "" && to == "" {
+		return nil, fmt.Errorf("compose requires either repeated --branches or both --from and --to")
+	}
+	if from == "" || to == "" {
+		return nil, fmt.Errorf("compose requires both --from and --to")
+	}
+
+	if _, ok := state.Branches[from]; !ok {
+		return nil, fmt.Errorf("branch %q is not tracked", from)
+	}
+	if _, ok := state.Branches[to]; !ok {
+		return nil, fmt.Errorf("branch %q is not tracked", to)
+	}
+
+	path := make([]string, 0)
+	current := to
+	for {
+		path = append(path, current)
+		if current == from {
+			break
+		}
+
+		record, ok := state.Branches[current]
+		if !ok || record.ParentBranch == "" || record.ParentBranch == state.Trunk {
+			return nil, fmt.Errorf("branch %q is not an ancestor of %q in tracked metadata", from, to)
+		}
+		current = record.ParentBranch
+	}
+
+	for left, right := 0, len(path)-1; left < right; left, right = left+1, right-1 {
+		path[left], path[right] = path[right], path[left]
+	}
+	return path, nil
+}
+
+func validateComposeExplicitBranches(state store.RepoState, explicit []string) ([]string, error) {
+	seen := map[string]bool{}
+	ordered := make([]string, 0, len(explicit))
+
+	for index, branch := range explicit {
+		if _, ok := state.Branches[branch]; !ok {
+			return nil, fmt.Errorf("branch %q is not tracked", branch)
+		}
+		if seen[branch] {
+			return nil, fmt.Errorf("branch %q was selected more than once", branch)
+		}
+		if index > 0 {
+			parent := state.Branches[branch].ParentBranch
+			if parent != explicit[index-1] {
+				return nil, fmt.Errorf("compose branches must form a contiguous parent chain; expected %q to parent %q, got %q", explicit[index-1], branch, parent)
+			}
+		}
+		seen[branch] = true
+		ordered = append(ordered, branch)
+	}
+
+	return ordered, nil
+}
+
+func composeDestinationBranch(name string) string {
+	trimmed := strings.TrimSpace(name)
+	if strings.Contains(trimmed, "/") {
+		return trimmed
+	}
+	return "stack/" + trimmed
+}
+
+func buildCloseoutPlan(runtime *stackruntime.Runtime, state store.RepoState, landingBranch string) (closeoutPlan, error) {
+	landing, ok := state.Landings[landingBranch]
+	if !ok {
+		return closeoutPlan{}, fmt.Errorf("landing branch %q is not recorded in local compose metadata; compose it first or repair the landing record", landingBranch)
+	}
+
+	plan := closeoutPlan{
+		LandingBranch:  landingBranch,
+		BaseBranch:     landing.BaseBranch,
+		SourceBranches: make([]closeoutBranchPlan, 0, len(landing.SourceBranches)),
+	}
+
+	landingPRs, err := runtime.GitHub.ListPRsByHead(runtime.Context, landingBranch)
+	if err != nil {
+		return closeoutPlan{}, err
+	}
+	switch len(landingPRs) {
+	case 0:
+	case 1:
+		pr := landingPRs[0]
+		plan.LandingPR = &pr
+	default:
+		plan.LandingPRAmbiguous = append(plan.LandingPRAmbiguous, landingPRs...)
+	}
+
+	ticketSet := map[string]bool{}
+	for _, branch := range landing.SourceBranches {
+		branchPlan := closeoutBranchPlan{Name: branch}
+		record, tracked := state.Branches[branch]
+		if tracked {
+			record, err = refreshTrackedPR(runtime, state, branch, record)
+			if err == nil && record.PR.Number > 0 {
+				pr := record.PR
+				branchPlan.PR = &pr
+			}
+		}
+		plan.SourceBranches = append(plan.SourceBranches, branchPlan)
+
+		for _, ticket := range extractTicketRefs(branch) {
+			ticketSet[ticket] = true
+		}
+	}
+	if len(landing.SupersededPRs) > 0 {
+		plan.SourceBranches = plan.SourceBranches[:0]
+		for _, number := range landing.SupersededPRs {
+			pr, err := runtime.GitHub.ViewPR(runtime.Context, number)
+			if err != nil {
+				plan.FollowUps = append(plan.FollowUps, fmt.Sprintf("tracked superseded PR #%d could not be loaded; inspect it manually before closeout", number))
+				continue
+			}
+			plan.SourceBranches = append(plan.SourceBranches, closeoutBranchPlan{
+				Name: pr.HeadRefName,
+				PR:   &pr,
+			})
+			for _, ticket := range extractTicketRefs(pr.HeadRefName) {
+				ticketSet[ticket] = true
+			}
+		}
+	}
+
+	tickets := mapKeys(ticketSet)
+	sort.Strings(tickets)
+
+	if plan.LandingPR == nil {
+		plan.FollowUps = append(plan.FollowUps, fmt.Sprintf("open or relink the landing PR for %s before treating source PRs as superseded", landingBranch))
+	} else if plan.LandingPR.State != "MERGED" {
+		plan.FollowUps = append(plan.FollowUps, fmt.Sprintf("wait for landing PR #%d to merge before closing source PRs as superseded", plan.LandingPR.Number))
+	}
+	if len(plan.LandingPRAmbiguous) > 0 {
+		numbers := make([]string, 0, len(plan.LandingPRAmbiguous))
+		for _, pr := range plan.LandingPRAmbiguous {
+			numbers = append(numbers, fmt.Sprintf("#%d %s", pr.Number, strings.ToLower(pr.State)))
+		}
+		sort.Strings(numbers)
+		plan.FollowUps = append(plan.FollowUps, fmt.Sprintf("resolve ambiguous landing PR ownership for %s: %s", landingBranch, strings.Join(numbers, ", ")))
+	}
+
+	deployReady, deployFollowUp := closeoutDeployState(state.Verifications[landingBranch], resolveOID(runtime, landingBranch))
+	if deployFollowUp != "" {
+		plan.FollowUps = append(plan.FollowUps, deployFollowUp)
+	}
+
+	for _, branch := range plan.SourceBranches {
+		if branch.PR == nil || branch.PR.Number == 0 {
+			continue
+		}
+		label := fmt.Sprintf("#%d %s", branch.PR.Number, branch.Name)
+		if plan.LandingPR != nil && plan.LandingPR.State == "MERGED" && branch.PR.State == "OPEN" {
+			plan.SupersededNow = append(plan.SupersededNow, label)
+			continue
+		}
+		if branch.PR.State == "OPEN" {
+			plan.SupersededPending = append(plan.SupersededPending, label)
+		}
+	}
+
+	if deployReady {
+		plan.TicketsSafeToClose = append(plan.TicketsSafeToClose, tickets...)
+	} else {
+		plan.TicketsPendingPostDeploy = append(plan.TicketsPendingPostDeploy, tickets...)
+	}
+
+	sort.Strings(plan.SupersededNow)
+	sort.Strings(plan.SupersededPending)
+	sort.Strings(plan.TicketsSafeToClose)
+	sort.Strings(plan.TicketsPendingPostDeploy)
+	sort.Strings(plan.FollowUps)
+
+	return plan, nil
+}
+
+func buildSupersedePlan(runtime *stackruntime.Runtime, state store.RepoState, landingBranch string, prNumbers []int) (supersedePlan, error) {
+	landing, ok := state.Landings[landingBranch]
+	if !ok {
+		return supersedePlan{}, fmt.Errorf("landing branch %q is not recorded in local compose metadata; compose it first or repair the landing record", landingBranch)
+	}
+	if len(landing.SourceBranches) == 0 {
+		return supersedePlan{}, fmt.Errorf("landing branch %q has no recorded source branches to supersede", landingBranch)
+	}
+
+	landingPRs, err := runtime.GitHub.ListPRsByHead(runtime.Context, landingBranch)
+	if err != nil {
+		return supersedePlan{}, err
+	}
+	if len(landingPRs) == 0 {
+		return supersedePlan{}, fmt.Errorf("landing branch %q has no pull request yet; open the landing PR before superseding original PRs", landingBranch)
+	}
+	if len(landingPRs) > 1 {
+		numbers := make([]string, 0, len(landingPRs))
+		for _, pr := range landingPRs {
+			numbers = append(numbers, fmt.Sprintf("#%d %s", pr.Number, strings.ToLower(pr.State)))
+		}
+		sort.Strings(numbers)
+		return supersedePlan{}, fmt.Errorf("landing branch %q matches multiple PRs: %s; resolve the ambiguity before superseding originals", landingBranch, strings.Join(numbers, ", "))
+	}
+
+	plan := supersedePlan{
+		LandingBranch: landingBranch,
+		LandingPR:     landingPRs[0],
+		SupersededPRs: make([]store.PullRequest, 0, len(prNumbers)),
+	}
+
+	for _, number := range prNumbers {
+		if number == plan.LandingPR.Number {
+			return supersedePlan{}, fmt.Errorf("landing PR #%d cannot supersede itself", number)
+		}
+		pr, err := runtime.GitHub.ViewPR(runtime.Context, number)
+		if err != nil {
+			return supersedePlan{}, err
+		}
+		plan.SupersededPRs = append(plan.SupersededPRs, pr)
+	}
+
+	return plan, nil
+}
+
+func closeoutDeployState(records []store.VerificationRecord, currentHead string) (bool, string) {
+	if currentHead == "" {
+		return false, "landing branch is missing locally; cannot judge deploy closeout safely"
+	}
+
+	for index := len(records) - 1; index >= 0; index-- {
+		record := records[index]
+		if !isDeployVerification(record.CheckType) {
+			continue
+		}
+		if record.HeadOID != "" && record.HeadOID != currentHead {
+			continue
+		}
+		if record.Passed {
+			return true, ""
+		}
+		return false, fmt.Sprintf("latest %s verification for the current landing head failed; resolve it before closing deploy-gated tickets", record.CheckType)
+	}
+
+	return false, "record a passed deploy or smoke verification for the current landing head before closing deploy-gated tickets"
+}
+
+func renderCloseoutPlan(plan closeoutPlan) []string {
+	lines := []string{
+		fmt.Sprintf("landing branch: %s", plan.LandingBranch),
+		fmt.Sprintf("base: %s", plan.BaseBranch),
+	}
+
+	switch {
+	case plan.LandingPR != nil:
+		lines = append(lines, fmt.Sprintf("landing PR: #%d %s", plan.LandingPR.Number, plan.LandingPR.State))
+	case len(plan.LandingPRAmbiguous) > 0:
+		numbers := make([]string, 0, len(plan.LandingPRAmbiguous))
+		for _, pr := range plan.LandingPRAmbiguous {
+			numbers = append(numbers, fmt.Sprintf("#%d %s", pr.Number, strings.ToLower(pr.State)))
+		}
+		sort.Strings(numbers)
+		lines = append(lines, fmt.Sprintf("landing PR: ambiguous (%s)", strings.Join(numbers, ", ")))
+	default:
+		lines = append(lines, "landing PR: not found")
+	}
+
+	lines = append(lines, "source branches:")
+	for _, branch := range plan.SourceBranches {
+		line := fmt.Sprintf("  %s", branch.Name)
+		if branch.PR != nil {
+			line += fmt.Sprintf("  PR #%d %s", branch.PR.Number, branch.PR.State)
+		}
+		lines = append(lines, line)
+	}
+
+	lines = append(lines, "superseded PRs safe to close now:")
+	lines = append(lines, renderCloseoutList(plan.SupersededNow)...)
+
+	lines = append(lines, "superseded PRs pending landing merge:")
+	lines = append(lines, renderCloseoutList(plan.SupersededPending)...)
+
+	lines = append(lines, "tickets safe to close now:")
+	lines = append(lines, renderCloseoutList(plan.TicketsSafeToClose)...)
+
+	lines = append(lines, "tickets pending post-deploy check:")
+	lines = append(lines, renderCloseoutList(plan.TicketsPendingPostDeploy)...)
+
+	lines = append(lines, "required follow-up checks:")
+	lines = append(lines, renderCloseoutList(plan.FollowUps)...)
+
+	return lines
+}
+
+func renderCloseoutList(values []string) []string {
+	if len(values) == 0 {
+		return []string{"  none"}
+	}
+	lines := make([]string, 0, len(values))
+	for _, value := range values {
+		lines = append(lines, fmt.Sprintf("  %s", value))
+	}
+	return lines
+}
+
+func isDeployVerification(checkType string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(checkType))
+	return normalized == "deploy" || normalized == "smoke"
+}
+
+var ticketRefPattern = regexp.MustCompile(`(?i)\b[a-z][a-z0-9]+-\d+\b`)
+
+func extractTicketRefs(value string) []string {
+	matches := ticketRefPattern.FindAllString(value, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	seen := map[string]bool{}
+	result := make([]string, 0, len(matches))
+	for _, match := range matches {
+		normalized := strings.ToUpper(strings.TrimSpace(match))
+		if normalized == "" || seen[normalized] {
+			continue
+		}
+		seen[normalized] = true
+		result = append(result, normalized)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func mapKeys(values map[string]bool) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func parsePRNumbers(values []string) ([]int, error) {
+	seen := map[int]bool{}
+	numbers := make([]int, 0)
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			trimmed := strings.TrimSpace(part)
+			if trimmed == "" {
+				continue
+			}
+			number, err := strconv.Atoi(trimmed)
+			if err != nil || number <= 0 {
+				return nil, fmt.Errorf("invalid PR number %q", trimmed)
+			}
+			if seen[number] {
+				continue
+			}
+			seen[number] = true
+			numbers = append(numbers, number)
+		}
+	}
+	sort.Ints(numbers)
+	return numbers, nil
+}
+
+func joinPRNumbers(numbers []int) string {
+	parts := make([]string, 0, len(numbers))
+	for _, number := range numbers {
+		parts = append(parts, fmt.Sprintf("#%d", number))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func buildQueuePlan(runtime *stackruntime.Runtime, state store.RepoState, branch string) (queuePlan, error) {
+	if _, ok := state.Landings[branch]; ok {
+		return buildLandingQueuePlan(runtime, state, branch)
+	}
+	return buildTrackedQueuePlan(runtime, state, branch)
+}
+
+func buildTrackedQueuePlan(runtime *stackruntime.Runtime, state store.RepoState, branch string) (queuePlan, error) {
+	record, ok := state.Branches[branch]
+	if !ok {
+		if _, landing := state.Landings[branch]; landing {
+			return queuePlan{}, fmt.Errorf("landing branch %q could not be resolved for queue handoff", branch)
+		}
+		return queuePlan{}, fmt.Errorf("branch %q is neither tracked nor recorded as a landing branch", branch)
+	}
+	if record.ParentBranch != state.Trunk {
+		return queuePlan{}, fmt.Errorf("branch %q must target trunk before queue handoff", branch)
+	}
+	if record.PR.Number == 0 {
+		return queuePlan{}, fmt.Errorf("branch %q has no tracked PR", branch)
+	}
+
+	if landingPlan, ok, err := buildSourceLandingQueuePlan(runtime, state, branch); err != nil {
+		return queuePlan{}, err
+	} else if ok {
+		return landingPlan, nil
+	}
+
+	headOID, err := runtime.Git.ResolveRef(runtime.Context, branch)
+	if err != nil {
+		return queuePlan{}, err
+	}
+	remoteHeadOID, remoteExists, err := runtime.Git.RemoteBranchOID(runtime.Context, state.DefaultRemote, branch)
+	if err != nil {
+		return queuePlan{}, err
+	}
+	if !remoteExists {
+		return queuePlan{}, fmt.Errorf("branch %q has not been pushed to %s", branch, state.DefaultRemote)
+	}
+	if remoteHeadOID != headOID {
+		return queuePlan{}, fmt.Errorf("remote branch %q is stale; run `stack submit %s` before queue handoff", branch, branch)
+	}
+
+	record, err = refreshTrackedPR(runtime, state, branch, record)
+	if err != nil {
+		return queuePlan{}, err
+	}
+	if err := validateTrackedPR(branch, record); err != nil {
+		return queuePlan{}, err
+	}
+	if record.PR.BaseRefName != "" && record.PR.BaseRefName != state.Trunk {
+		return queuePlan{}, fmt.Errorf("PR for %q currently targets %q; run `stack submit %s` before queue handoff", branch, record.PR.BaseRefName, branch)
+	}
+	if record.PR.IsDraft {
+		return queuePlan{}, fmt.Errorf("branch %q is still a draft PR", branch)
+	}
+	if record.PR.LastSeenHeadOID != "" && record.PR.LastSeenHeadOID != headOID {
+		return queuePlan{}, fmt.Errorf("PR head for %q is stale; run `stack submit %s` before queue handoff", branch, branch)
+	}
+
+	verification, err := validateQueueVerification(branch, state.Verifications[branch], headOID)
+	if err != nil {
+		return queuePlan{}, err
+	}
+
+	nextSteps := []string{
+		fmt.Sprintf("wait for GitHub to merge PR #%d", record.PR.Number),
+		"then run: stack sync",
+	}
+	children := stack.Children(state, branch)
+	if len(children) > 0 {
+		nextSteps = append(nextSteps, fmt.Sprintf("then run: stack submit %s", children[0]))
+		nextSteps = append(nextSteps, fmt.Sprintf("then run: stack queue %s", children[0]))
+	}
+
+	return queuePlan{
+		Branch:       branch,
+		PR:           record.PR,
+		HeadOID:      headOID,
+		Verification: verification,
+		NextSteps:    nextSteps,
+	}, nil
+}
+
+func buildLandingQueuePlan(runtime *stackruntime.Runtime, state store.RepoState, branch string) (queuePlan, error) {
+	landing, ok := state.Landings[branch]
+	if !ok {
+		return queuePlan{}, fmt.Errorf("landing branch %q is not recorded in local compose metadata", branch)
+	}
+	if landing.BaseBranch != "" && landing.BaseBranch != state.Trunk {
+		return queuePlan{}, fmt.Errorf("landing branch %q targets %q; only trunk-bound landing branches can enter queue", branch, landing.BaseBranch)
+	}
+	if !runtime.Git.BranchExists(runtime.Context, branch) {
+		return queuePlan{}, fmt.Errorf("landing branch %q does not exist locally", branch)
+	}
+
+	headOID, err := runtime.Git.ResolveRef(runtime.Context, branch)
+	if err != nil {
+		return queuePlan{}, err
+	}
+	remoteHeadOID, remoteExists, err := runtime.Git.RemoteBranchOID(runtime.Context, state.DefaultRemote, branch)
+	if err != nil {
+		return queuePlan{}, err
+	}
+	if !remoteExists {
+		return queuePlan{}, fmt.Errorf("landing branch %q has not been pushed to %s", branch, state.DefaultRemote)
+	}
+	if remoteHeadOID != headOID {
+		return queuePlan{}, fmt.Errorf("remote landing branch %q is stale; push or refresh it before queue handoff", branch)
+	}
+
+	prs, err := runtime.GitHub.ListPRsByHead(runtime.Context, branch)
+	if err != nil {
+		return queuePlan{}, err
+	}
+	if len(prs) == 0 {
+		return queuePlan{}, fmt.Errorf("landing branch %q has no pull request yet; open the landing PR before queue handoff", branch)
+	}
+	if len(prs) > 1 {
+		numbers := describePRs(prs)
+		return queuePlan{}, fmt.Errorf("landing branch %q matches multiple PRs: %s; resolve the ambiguity before queue handoff", branch, strings.Join(numbers, ", "))
+	}
+
+	pr := prs[0]
+	if pr.State == "CLOSED" {
+		return queuePlan{}, fmt.Errorf("landing PR for %q is closed; repair or reopen it before queue handoff", branch)
+	}
+	if pr.State == "MERGED" {
+		return queuePlan{}, fmt.Errorf("landing PR for %q is already merged; run `stack closeout %s` instead", branch, branch)
+	}
+	if pr.IsDraft {
+		return queuePlan{}, fmt.Errorf("landing branch %q is still a draft PR", branch)
+	}
+	if pr.BaseRefName != "" && pr.BaseRefName != state.Trunk {
+		return queuePlan{}, fmt.Errorf("landing PR for %q currently targets %q; retarget it to %s before queue handoff", branch, pr.BaseRefName, state.Trunk)
+	}
+	if pr.LastSeenHeadOID != "" && pr.LastSeenHeadOID != headOID {
+		return queuePlan{}, fmt.Errorf("landing PR head for %q is stale; push the current landing head before queue handoff", branch)
+	}
+
+	verification, err := validateQueueVerification(branch, state.Verifications[branch], headOID)
+	if err != nil {
+		return queuePlan{}, err
+	}
+
+	return queuePlan{
+		Branch:       branch,
+		PR:           pr,
+		HeadOID:      headOID,
+		IsLanding:    true,
+		Verification: verification,
+		ExcludedPRs:  landingExcludedPRs(state, landing),
+		NextSteps: []string{
+			fmt.Sprintf("wait for GitHub to merge PR #%d", pr.Number),
+			fmt.Sprintf("then run: stack closeout %s", branch),
+		},
+	}, nil
+}
+
+func buildSourceLandingQueuePlan(runtime *stackruntime.Runtime, state store.RepoState, branch string) (queuePlan, bool, error) {
+	landingBranches := landingBranchesForSourceBranch(state, branch)
+	if len(landingBranches) == 0 {
+		return queuePlan{}, false, nil
+	}
+	if len(landingBranches) > 1 {
+		return queuePlan{}, false, fmt.Errorf("branch %q appears in multiple landing batches (%s); repair the landing metadata before queue handoff", branch, strings.Join(landingBranches, ", "))
+	}
+
+	landingBranch := landingBranches[0]
+	prs, err := runtime.GitHub.ListPRsByHead(runtime.Context, landingBranch)
+	if err != nil {
+		return queuePlan{}, false, err
+	}
+	if len(prs) == 0 {
+		return queuePlan{}, false, fmt.Errorf("branch %q is part of landing batch %q; open or relink the landing PR before queue handoff, and keep source PRs out of the merge queue", branch, landingBranch)
+	}
+	if len(prs) > 1 {
+		numbers := describePRs(prs)
+		return queuePlan{}, false, fmt.Errorf("branch %q is part of landing batch %q; resolve ambiguous landing PR ownership (%s) before queue handoff, and keep source PRs out of the merge queue", branch, landingBranch, strings.Join(numbers, ", "))
+	}
+
+	pr := prs[0]
+	return queuePlan{}, false, fmt.Errorf("branch %q is part of landing batch %q; queue landing PR #%d instead and keep source PRs out of the merge queue", branch, landingBranch, pr.Number)
+}
+
+func validateQueueVerification(branch string, records []store.VerificationRecord, currentHeadOID string) (*queueVerification, error) {
+	if len(records) == 0 {
+		return nil, nil
+	}
+
+	latest := records[len(records)-1]
+	verification := &queueVerification{
+		Latest:             latest,
+		HeadMatchesCurrent: latest.HeadOID != "" && currentHeadOID != "" && latest.HeadOID == currentHeadOID,
+	}
+
+	if !latest.Passed {
+		return nil, fmt.Errorf("latest %s verification for %q failed; inspect `stack verify list %s` before queue handoff", latest.CheckType, branch, branch)
+	}
+	if !verification.HeadMatchesCurrent {
+		return nil, fmt.Errorf("branch %q head moved since the latest recorded verification; rerun or record fresh verification before queue handoff", branch)
+	}
+	return verification, nil
+}
+
+func renderQueueVerification(verification queueVerification) string {
+	parts := []string{
+		strings.TrimSpace(verification.Latest.CheckType),
+		verificationResult(verification.Latest),
+	}
+	if verification.Latest.Identifier != "" {
+		parts = append(parts, verification.Latest.Identifier)
+	}
+	return strings.Join(parts, " ")
+}
+
+func landingBranchesForSourceBranch(state store.RepoState, branch string) []string {
+	names := make([]string, 0)
+	for landingBranch, landing := range state.Landings {
+		for _, sourceBranch := range landing.SourceBranches {
+			if sourceBranch == branch {
+				names = append(names, landingBranch)
+				break
+			}
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func landingExcludedPRs(state store.RepoState, landing store.LandingRecord) []int {
+	if len(landing.SupersededPRs) > 0 {
+		return append([]int(nil), landing.SupersededPRs...)
+	}
+
+	seen := map[int]bool{}
+	numbers := make([]int, 0, len(landing.SourceBranches))
+	for _, branch := range landing.SourceBranches {
+		record, ok := state.Branches[branch]
+		if !ok || record.PR.Number == 0 || seen[record.PR.Number] {
+			continue
+		}
+		seen[record.PR.Number] = true
+		numbers = append(numbers, record.PR.Number)
+	}
+	sort.Ints(numbers)
+	return numbers
+}
+
+func describePRs(prs []store.PullRequest) []string {
+	values := make([]string, 0, len(prs))
+	for _, pr := range prs {
+		values = append(values, fmt.Sprintf("#%d %s", pr.Number, strings.ToLower(pr.State)))
+	}
+	sort.Strings(values)
+	return values
 }
 
 func restackSteps(runtime *stackruntime.Runtime, state store.RepoState, args []string, all bool) ([]store.RestackStep, error) {
@@ -1201,6 +2488,20 @@ func cloneRepoState(state store.RepoState) store.RepoState {
 	for branch, record := range state.Branches {
 		cloned.Branches[branch] = record
 	}
+	cloned.Landings = make(map[string]store.LandingRecord, len(state.Landings))
+	for branch, record := range state.Landings {
+		cloned.Landings[branch] = store.LandingRecord{
+			BaseBranch:     record.BaseBranch,
+			SourceBranches: append([]string(nil), record.SourceBranches...),
+			SupersededPRs:  append([]int(nil), record.SupersededPRs...),
+			SupersededAt:   record.SupersededAt,
+			CreatedAt:      record.CreatedAt,
+		}
+	}
+	cloned.Verifications = make(map[string][]store.VerificationRecord, len(state.Verifications))
+	for branch, records := range state.Verifications {
+		cloned.Verifications[branch] = append([]store.VerificationRecord(nil), records...)
+	}
 	return cloned
 }
 
@@ -1389,28 +2690,33 @@ func ensureTrackedParentAllowed(state store.RepoState, parent string) error {
 }
 
 func trackRestackAnchor(runtime *stackruntime.Runtime, branch string, parent string) (string, error) {
+	anchor, _, err := trackRestackAnchorDetail(runtime, branch, parent)
+	return anchor, err
+}
+
+func trackRestackAnchorDetail(runtime *stackruntime.Runtime, branch string, parent string) (string, bool, error) {
 	parentOID, err := runtime.Git.ResolveRef(runtime.Context, parent)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 
 	validAnchor, err := runtime.Git.IsAncestor(runtime.Context, parentOID, branch)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if validAnchor {
-		return parentOID, nil
+		return parentOID, false, nil
 	}
 
 	mergeBase, ok, err := runtime.Git.MergeBase(runtime.Context, parent, branch)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if !ok || mergeBase == "" {
-		return "", fmt.Errorf("branch %q does not share a repairable merge base with parent %q; rebase it first or choose a different parent", branch, parent)
+		return "", false, fmt.Errorf("branch %q does not share a repairable merge base with parent %q; rebase it first or choose a different parent", branch, parent)
 	}
 
-	return mergeBase, nil
+	return mergeBase, true, nil
 }
 
 func resolveOID(runtime *stackruntime.Runtime, ref string) string {
@@ -1419,6 +2725,20 @@ func resolveOID(runtime *stackruntime.Runtime, ref string) string {
 		return ""
 	}
 	return oid
+}
+
+func shortOID(oid string) string {
+	if len(oid) <= 12 {
+		return oid
+	}
+	return oid[:12]
+}
+
+func verificationResult(record store.VerificationRecord) string {
+	if record.Passed {
+		return "passed"
+	}
+	return "failed"
 }
 
 func init() {

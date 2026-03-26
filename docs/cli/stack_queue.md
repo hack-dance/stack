@@ -4,11 +4,11 @@ Generated from the current Cobra command tree.
 
 ## stack queue
 
-Hand one healthy bottom-of-stack PR to GitHub auto-merge or merge queue
+Hand one verified trunk-bound PR or landing PR to GitHub auto-merge or merge queue
 
 ### Synopsis
 
-Validate that one tracked branch is ready for trunk handoff, then ask GitHub to auto-merge or enqueue the PR using the current head commit.
+Validate that one tracked trunk branch or recorded landing branch is ready for handoff, then ask GitHub to auto-merge or enqueue the PR using the current head commit.
 
 ```
 stack queue <branch> [flags]
@@ -18,6 +18,7 @@ stack queue <branch> [flags]
 
 ```
 stack queue feature/a
+stack queue stack/discovery-core
 stack queue feature/a --strategy squash
 stack queue feature/a --yes
 ```

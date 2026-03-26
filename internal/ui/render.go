@@ -60,6 +60,9 @@ func RenderStatus(summary stack.Summary) string {
 				),
 			)
 		}
+		if branch.Verification != nil {
+			lines = append(lines, MutedStyle.Render(fmt.Sprintf("%sVerify: %s", prefix+"  ", renderVerificationSummary(*branch.Verification))))
+		}
 
 		if len(branch.Issues) == 0 {
 			lines = append(lines, MutedStyle.Render(fmt.Sprintf("%sNo issues detected.", prefix+"  ")))
@@ -68,6 +71,36 @@ func RenderStatus(summary stack.Summary) string {
 
 		for _, issue := range branch.Issues {
 			lines = append(lines, fmt.Sprintf("%s- %s", prefix+"  ", renderIssue(issue)))
+		}
+	}
+
+	if len(summary.LandingBranches) > 0 {
+		lines = append(lines,
+			"",
+			SectionStyle.Render("Landing Branches"),
+		)
+		for _, branch := range summary.LandingBranches {
+			status := HealthyBadgeStyle.Render("healthy")
+			if len(branch.Issues) > 0 {
+				status = renderSeverity(branch.Issues[0].Severity)
+			}
+
+			currentMarker := ""
+			if branch.IsCurrentBranch {
+				currentMarker = " " + CodeStyle.Render("(current)")
+			}
+
+			lines = append(lines, fmt.Sprintf("%s %s%s", status, CodeStyle.Render(branch.Name), currentMarker))
+			if branch.Verification != nil {
+				lines = append(lines, MutedStyle.Render(fmt.Sprintf("  Verify: %s", renderVerificationSummary(*branch.Verification))))
+			}
+			if len(branch.Issues) == 0 {
+				lines = append(lines, MutedStyle.Render("  No issues detected."))
+				continue
+			}
+			for _, issue := range branch.Issues {
+				lines = append(lines, fmt.Sprintf("  - %s", renderIssue(issue)))
+			}
 		}
 	}
 
@@ -99,4 +132,34 @@ func renderIssue(issue stack.HealthIssue) string {
 		" ",
 		issue.Message,
 	)
+}
+
+func renderVerificationSummary(summary stack.VerificationSummary) string {
+	result := verificationResultStyle(summary.Latest.Passed).Render(verificationResultLabel(summary.Latest.Passed))
+	line := fmt.Sprintf("%s %s", summary.Latest.CheckType, result)
+	if summary.Latest.Identifier != "" {
+		line += fmt.Sprintf(" %s", summary.Latest.Identifier)
+	}
+	if summary.Latest.Score != nil {
+		line += fmt.Sprintf(" score=%d", *summary.Latest.Score)
+	}
+	if !summary.HeadMatchesCurrent {
+		line += " stale"
+	}
+	line += fmt.Sprintf(" (%d total)", summary.Count)
+	return line
+}
+
+func verificationResultStyle(passed bool) lipgloss.Style {
+	if passed {
+		return HealthyBadgeStyle
+	}
+	return WarnBadgeStyle
+}
+
+func verificationResultLabel(passed bool) string {
+	if passed {
+		return "passed"
+	}
+	return "failed"
 }
