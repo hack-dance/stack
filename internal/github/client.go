@@ -111,7 +111,7 @@ func (c *Client) FindPRByHead(ctx context.Context, branch string) (store.PullReq
 		for _, pr := range open {
 			numbers = append(numbers, fmt.Sprintf("#%d", pr.Number))
 		}
-		return store.PullRequest{}, fmt.Errorf("multiple open pull requests match head %q: %s", branch, strings.Join(numbers, ", "))
+		return store.PullRequest{}, fmt.Errorf("multiple open pull requests match head %q: %s; close or retarget the duplicate until one open PR remains, then rerun `stack submit %s`", branch, strings.Join(numbers, ", "), branch)
 	}
 }
 

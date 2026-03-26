@@ -93,6 +93,7 @@ This tells you:
 - which tracked branches are healthy
 - which branches already have linked PRs
 - which PR bases or heads disagree with your intended stack
+- whether a branch needs `stack submit`, `stack restack`, or manual metadata repair next
 
 ### 5. Fix the shape
 
@@ -117,6 +118,11 @@ stack submit --all
 That is the step that turns your intended parent graph into updated PR bases and
 branch tips on GitHub.
 
+When `stack submit` creates a PR during adoption, it uses the tip commit subject
+and body by default. If the branch tip has no commit body yet, `stack` uses a
+deterministic fallback body so the first adoption submit stays non-interactive
+and reviewable.
+
 ## Large sets: how to keep them manageable
 
 For a larger PR set, the safest pattern is:
@@ -130,6 +136,10 @@ That gives you tighter feedback loops and makes conflicts easier to localize.
 
 If you try to adopt everything at once, you can still do it, but debugging
 parent mistakes gets slower and noisier.
+
+If `stack submit` reports multiple open PRs for one head branch, stop and clean
+that up before continuing. `stack` refuses to guess which open PR owns a reused
+head name.
 
 ## Testing a composed set
 

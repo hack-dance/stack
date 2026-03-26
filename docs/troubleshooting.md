@@ -67,6 +67,12 @@ stack sync
 
 Then choose a repair path deliberately.
 
+Common outcomes:
+
+- `run \`stack submit <branch>\`` when the remote branch or PR base/head is simply stale
+- relink or clear local PR metadata when the tracked PR was closed, deleted, or points at the wrong head
+- inspect the merged parent manually when GitHub-side history drift means `sync --apply` would have to guess
+
 ## `stack submit` or `stack queue` fails against GitHub
 
 Check:
@@ -87,6 +93,10 @@ stack queue <branch>
 If the CLI reports multiple open PRs for one head branch, it is refusing to
 guess which live PR owns that branch. Close or retarget the duplicate until one
 open PR remains for that head name, then rerun `stack submit`.
+
+When `stack submit` creates a new PR, it uses the tip commit subject and body by
+default. If the commit body is empty, the preview will show that `stack` is
+using its generated fallback body instead.
 
 ## Release automation does not update the tap
 
