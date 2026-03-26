@@ -1247,6 +1247,8 @@ func TestAdoptPRRefreshesStaleLocalBranchToMatchPRHead(t *testing.T) {
 
 	otherClone := filepath.Join(t.TempDir(), "other-clone")
 	testutil.Run(t, "", "git", "clone", remote, otherClone)
+	testutil.Run(t, otherClone, "git", "config", "user.email", "stack@example.com")
+	testutil.Run(t, otherClone, "git", "config", "user.name", "Stack Test")
 	testutil.Run(t, otherClone, "git", "switch", "feature/a")
 	testutil.WriteFile(t, filepath.Join(otherClone, "feature-a.txt"), "feature a advanced\n")
 	testutil.Run(t, otherClone, "git", "add", "feature-a.txt")
