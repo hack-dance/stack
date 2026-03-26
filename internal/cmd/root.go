@@ -612,15 +612,7 @@ stack submit --all --yes
 				}
 
 				if record.PR.Number == 0 {
-					title, body, err := runtime.Git.CommitMessage(runtime.Context, plan.Branch)
-					if err != nil {
-						return err
-					}
-					if title == "" {
-						title = plan.Branch
-					}
-					body = chooseString(body, fmt.Sprintf("Stack branch `%s` targeting `%s`.", plan.Branch, record.ParentBranch))
-					pr, err := runtime.GitHub.CreatePR(runtime.Context, record.ParentBranch, plan.Branch, title, body, draft)
+					pr, err := runtime.GitHub.CreatePR(runtime.Context, record.ParentBranch, plan.Branch, plan.Metadata.Title, plan.Metadata.Body, draft)
 					if err != nil {
 						return err
 					}
@@ -677,24 +669,24 @@ stack sync --apply
 				record := state.Branches[branch]
 				if record.PR.Number == 0 {
 					if runtime.Git.RemoteBranchExists(runtime.Context, state.DefaultRemote, branch) {
-						repairs = append(repairs, fmt.Sprintf("%s: remote branch exists but no PR is linked in local metadata", branch))
+						repairs = append(repairs, fmt.Sprintf("%s: remote branch exists but no PR is linked in local metadata; run `stack submit %s` to relink or create the PR", branch, branch))
 					}
 					continue
 				}
 
 				pr, err := runtime.GitHub.ViewPR(runtime.Context, record.PR.Number)
 				if err != nil {
-					repairs = append(repairs, fmt.Sprintf("%s: tracked PR #%d could not be loaded; repair required", branch, record.PR.Number))
+					repairs = append(repairs, fmt.Sprintf("%s: tracked PR #%d could not be loaded; run `stack status` and inspect the PR before resubmitting", branch, record.PR.Number))
 					continue
 				}
 				record.PR = pr
 				state.Branches[branch] = record
 
 				if pr.HeadRefName != "" && pr.HeadRefName != branch {
-					repairs = append(repairs, fmt.Sprintf("%s: PR head is %s, expected %s", branch, pr.HeadRefName, branch))
+					repairs = append(repairs, fmt.Sprintf("%s: PR head is %s, expected %s; repair or relink the PR before submitting again", branch, pr.HeadRefName, branch))
 				}
 				if pr.BaseRefName != "" && pr.BaseRefName != record.ParentBranch {
-					repairs = append(repairs, fmt.Sprintf("%s: PR base is %s, expected %s", branch, pr.BaseRefName, record.ParentBranch))
+					repairs = append(repairs, fmt.Sprintf("%s: PR base is %s, expected %s; run `stack submit %s` to retarget it", branch, pr.BaseRefName, record.ParentBranch, branch))
 					if apply && pr.State == "OPEN" && pr.HeadRefName == branch {
 						if err := runtime.GitHub.EditPRBase(runtime.Context, pr.Number, record.ParentBranch); err != nil {
 							return err
@@ -708,7 +700,7 @@ stack sync --apply
 					}
 				}
 				if !runtime.Git.RemoteBranchExists(runtime.Context, state.DefaultRemote, branch) {
-					repairs = append(repairs, fmt.Sprintf("%s: remote branch is missing", branch))
+					repairs = append(repairs, fmt.Sprintf("%s: remote branch is missing; run `stack submit %s` to republish it", branch, branch))
 				}
 
 				cleanMergedParent := pr.State == "MERGED" &&
@@ -716,7 +708,7 @@ stack sync --apply
 					(pr.BaseRefName == "" || pr.BaseRefName == record.ParentBranch)
 
 				if pr.State == "MERGED" && !cleanMergedParent {
-					repairs = append(repairs, fmt.Sprintf("%s: merged parent has drifted PR metadata; inspect manually before reparenting children", branch))
+					repairs = append(repairs, fmt.Sprintf("%s: merged parent has drifted PR metadata; run `stack status` and inspect the merged PR before reparenting children", branch))
 				}
 
 				if cleanMergedParent {
@@ -726,7 +718,7 @@ stack sync --apply
 						if parentHeadOID != "" && childRecord.Restack.LastParentHeadOID == parentHeadOID {
 							repairs = append(repairs, fmt.Sprintf("%s: clean reparent %s -> %s", child, branch, record.ParentBranch))
 						} else {
-							repairs = append(repairs, fmt.Sprintf("%s: merged parent %s needs manual review before reparenting", child, branch))
+							repairs = append(repairs, fmt.Sprintf("%s: merged parent %s needs manual review before reparenting; repair the branch graph, then rerun `stack sync --apply`", child, branch))
 							continue
 						}
 						if apply {
@@ -735,7 +727,7 @@ stack sync --apply
 						}
 					}
 				} else if pr.State == "CLOSED" {
-					repairs = append(repairs, fmt.Sprintf("%s: PR is closed without merge; manual repair required", branch))
+					repairs = append(repairs, fmt.Sprintf("%s: PR is closed without merge; relink or clear local metadata before continuing", branch))
 				}
 			}
 
@@ -908,8 +900,16 @@ type submitPlan struct {
 	LocalHead    string
 	RemoteHead   string
 	RemoteExists bool
+	Metadata     submitPRMetadata
 	Record       store.BranchRecord
 	Preview      []string
+}
+
+type submitPRMetadata struct {
+	Title       string
+	Body        string
+	TitleSource string
+	BodySource  string
 }
 
 func buildSubmitPlan(runtime *stackruntime.Runtime, state store.RepoState, branch string) (submitPlan, error) {
@@ -940,6 +940,7 @@ func buildSubmitPlan(runtime *stackruntime.Runtime, state store.RepoState, branc
 	}
 
 	preview := []string{fmt.Sprintf("%s -> %s", branch, record.ParentBranch)}
+	metadata := submitPRMetadata{}
 	if !remoteExists {
 		preview = append(preview, "push new remote branch")
 	} else if remoteHeadOID != localHeadOID {
@@ -949,7 +950,13 @@ func buildSubmitPlan(runtime *stackruntime.Runtime, state store.RepoState, branc
 	}
 
 	if record.PR.Number == 0 {
+		metadata, err = resolveSubmitPRMetadata(runtime, branch, record.ParentBranch)
+		if err != nil {
+			return submitPlan{}, err
+		}
 		preview = append(preview, "create GitHub pull request")
+		preview = append(preview, fmt.Sprintf("PR title: %q (%s)", metadata.Title, metadata.TitleSource))
+		preview = append(preview, fmt.Sprintf("PR body: %s", metadata.BodySource))
 	} else if record.PR.BaseRefName != "" && record.PR.BaseRefName != record.ParentBranch {
 		preview = append(preview, fmt.Sprintf("retarget PR #%d base to %s", record.PR.Number, record.ParentBranch))
 	} else {
@@ -961,9 +968,36 @@ func buildSubmitPlan(runtime *stackruntime.Runtime, state store.RepoState, branc
 		LocalHead:    localHeadOID,
 		RemoteHead:   remoteHeadOID,
 		RemoteExists: remoteExists,
+		Metadata:     metadata,
 		Record:       record,
 		Preview:      preview,
 	}, nil
+}
+
+func resolveSubmitPRMetadata(runtime *stackruntime.Runtime, branch string, parent string) (submitPRMetadata, error) {
+	title, body, err := runtime.Git.CommitMessage(runtime.Context, branch)
+	if err != nil {
+		return submitPRMetadata{}, err
+	}
+
+	metadata := submitPRMetadata{
+		Title:       strings.TrimSpace(title),
+		Body:        strings.TrimSpace(body),
+		TitleSource: "commit subject",
+		BodySource:  "commit body",
+	}
+
+	if metadata.Title == "" {
+		metadata.Title = branch
+		metadata.TitleSource = "branch name fallback"
+	}
+
+	if metadata.Body == "" {
+		metadata.Body = fmt.Sprintf("Stack branch `%s` targeting `%s`.\n\nGenerated by `stack submit` because the tip commit body was empty.", branch, parent)
+		metadata.BodySource = "generated default"
+	}
+
+	return metadata, nil
 }
 
 func restackSteps(runtime *stackruntime.Runtime, state store.RepoState, args []string, all bool) ([]store.RestackStep, error) {
@@ -1318,13 +1352,13 @@ func validateTrackedPR(branch string, record store.BranchRecord) error {
 		return nil
 	}
 	if record.PR.State == "CLOSED" {
-		return fmt.Errorf("tracked PR for %q is closed; repair local metadata before submitting again", branch)
+		return fmt.Errorf("tracked PR for %q is closed; run `stack status` and repair or relink local metadata before submitting again", branch)
 	}
 	if record.PR.State == "MERGED" {
 		return fmt.Errorf("tracked PR for %q is already merged; run `stack sync` before submitting again", branch)
 	}
 	if record.PR.HeadRefName != "" && record.PR.HeadRefName != branch {
-		return fmt.Errorf("tracked PR for %q points at head %q", branch, record.PR.HeadRefName)
+		return fmt.Errorf("tracked PR for %q points at head %q; inspect with `stack status` and relink the correct PR before submitting again", branch, record.PR.HeadRefName)
 	}
 	return nil
 }

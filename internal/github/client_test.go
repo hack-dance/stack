@@ -190,7 +190,7 @@ func TestFindPRByHeadRejectsAmbiguousOpenMatches(t *testing.T) {
 
 	client := stackgh.NewClient(repo)
 	_, err := client.FindPRByHead(context.Background(), "feature/a")
-	if err == nil || !strings.Contains(err.Error(), "multiple open pull requests match head") {
+	if err == nil || !strings.Contains(err.Error(), "multiple open pull requests match head") || !strings.Contains(err.Error(), "then rerun `stack submit feature/a`") {
 		t.Fatalf("expected ambiguous open-pr error, got %v", err)
 	}
 }

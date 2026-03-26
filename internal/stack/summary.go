@@ -108,7 +108,7 @@ func BuildSummary(ctx context.Context, git *stackgit.Client, state store.RepoSta
 				if !isAncestor {
 					summary.Issues = append(summary.Issues, HealthIssue{
 						Severity: SeverityWarn,
-						Message:  "branch is not currently based on parent",
+						Message:  "branch is not currently based on parent; run `stack restack` or repair it manually",
 					})
 				}
 			}
@@ -117,19 +117,24 @@ func BuildSummary(ctx context.Context, git *stackgit.Client, state store.RepoSta
 		if record.Restack.LastParentHeadOID == "" {
 			summary.Issues = append(summary.Issues, HealthIssue{
 				Severity: SeverityWarn,
-				Message:  "missing restack anchor",
+				Message:  "missing restack anchor; re-track or repair metadata before restacking",
 			})
 		} else if summary.ParentHeadOID != "" && record.Restack.LastParentHeadOID != summary.ParentHeadOID {
 			summary.Issues = append(summary.Issues, HealthIssue{
 				Severity: SeverityInfo,
-				Message:  "parent moved since last recorded restack",
+				Message:  "parent moved since last recorded restack; run `stack restack` before submitting",
 			})
 		}
 
 		if !summary.RemoteExists {
 			summary.Issues = append(summary.Issues, HealthIssue{
 				Severity: SeverityInfo,
-				Message:  "remote branch has not been pushed yet",
+				Message:  "remote branch has not been pushed yet; run `stack submit` when ready",
+			})
+		} else if record.PR.Number == 0 {
+			summary.Issues = append(summary.Issues, HealthIssue{
+				Severity: SeverityWarn,
+				Message:  "remote branch exists but no PR is linked; run `stack submit` to relink or create one",
 			})
 		}
 
@@ -137,31 +142,31 @@ func BuildSummary(ctx context.Context, git *stackgit.Client, state store.RepoSta
 			if record.PR.State == "CLOSED" {
 				summary.Issues = append(summary.Issues, HealthIssue{
 					Severity: SeverityWarn,
-					Message:  "tracked PR is closed and needs repair or relink",
+					Message:  "tracked PR is closed; repair or relink it before submitting again",
 				})
 			}
 			if record.PR.State == "MERGED" {
 				summary.Issues = append(summary.Issues, HealthIssue{
 					Severity: SeverityInfo,
-					Message:  "tracked PR is merged; descendants may need sync",
+					Message:  "tracked PR is merged; run `stack sync` before moving descendants",
 				})
 			}
 			if record.PR.BaseRefName != "" && record.PR.BaseRefName != record.ParentBranch {
 				summary.Issues = append(summary.Issues, HealthIssue{
 					Severity: SeverityWarn,
-					Message:  fmt.Sprintf("cached PR base is %q, expected %q", record.PR.BaseRefName, record.ParentBranch),
+					Message:  fmt.Sprintf("cached PR base is %q, expected %q; run `stack submit` to retarget it", record.PR.BaseRefName, record.ParentBranch),
 				})
 			}
 			if record.PR.HeadRefName != "" && record.PR.HeadRefName != branchName {
 				summary.Issues = append(summary.Issues, HealthIssue{
 					Severity: SeverityWarn,
-					Message:  fmt.Sprintf("cached PR head is %q, expected %q", record.PR.HeadRefName, branchName),
+					Message:  fmt.Sprintf("cached PR head is %q, expected %q; relink the correct PR before continuing", record.PR.HeadRefName, branchName),
 				})
 			}
 			if summary.CurrentHeadOID != "" && record.PR.LastSeenHeadOID != "" && record.PR.LastSeenHeadOID != summary.CurrentHeadOID {
 				summary.Issues = append(summary.Issues, HealthIssue{
 					Severity: SeverityInfo,
-					Message:  "local branch head differs from last synced PR head",
+					Message:  "local branch head differs from the last synced PR head; run `stack submit` to refresh it",
 				})
 			}
 		}
