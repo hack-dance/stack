@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.3](https://github.com/hack-dance/stack/compare/v0.1.2...v0.1.3) (2026-03-26)
+
+
+### Bug Fixes
+
+* enforce stack parent invariants and deterministic PR lookup ([c823ef7](https://github.com/hack-dance/stack/commit/c823ef7dc30b911b8794899d5528db19401a8608))
+* enforce stack parent invariants and deterministic PR lookup ([a67b5cc](https://github.com/hack-dance/stack/commit/a67b5cca1709218b09cae6467cdf1f0edc476e12))
+* mark release prs as tagged after tagging ([5471af3](https://github.com/hack-dance/stack/commit/5471af39c9ef975852853b085c957edd3ac9f1b7))
+
 ## [0.1.2](https://github.com/hack-dance/stack/compare/v0.1.1...v0.1.2) (2026-03-25)
 
 
