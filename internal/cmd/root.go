@@ -221,7 +221,10 @@ func newTrackCommand(runtime *stackruntime.Runtime) *cobra.Command {
 				return err
 			}
 
-			parentOID, _ := runtime.Git.ResolveRef(runtime.Context, parent)
+			parentOID, err := trackRestackAnchor(runtime, branch, parent)
+			if err != nil {
+				return err
+			}
 			state.Branches[branch] = store.BranchRecord{
 				ParentBranch: parent,
 				RemoteName:   state.DefaultRemote,
@@ -1349,6 +1352,31 @@ func ensureTrackedParentAllowed(state store.RepoState, parent string) error {
 		return nil
 	}
 	return fmt.Errorf("parent branch %q is not tracked in local metadata; track it first or move under %s", parent, state.Trunk)
+}
+
+func trackRestackAnchor(runtime *stackruntime.Runtime, branch string, parent string) (string, error) {
+	parentOID, err := runtime.Git.ResolveRef(runtime.Context, parent)
+	if err != nil {
+		return "", err
+	}
+
+	validAnchor, err := runtime.Git.IsAncestor(runtime.Context, parentOID, branch)
+	if err != nil {
+		return "", err
+	}
+	if validAnchor {
+		return parentOID, nil
+	}
+
+	mergeBase, ok, err := runtime.Git.MergeBase(runtime.Context, parent, branch)
+	if err != nil {
+		return "", err
+	}
+	if !ok || mergeBase == "" {
+		return "", fmt.Errorf("branch %q does not share a repairable merge base with parent %q; rebase it first or choose a different parent", branch, parent)
+	}
+
+	return mergeBase, nil
 }
 
 func resolveOID(runtime *stackruntime.Runtime, ref string) string {

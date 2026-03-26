@@ -114,6 +114,36 @@ func (c *Client) IsAncestor(ctx context.Context, ancestor string, descendant str
 	return false, err
 }
 
+func (c *Client) MergeBase(ctx context.Context, left string, right string) (string, bool, error) {
+	cmd := exec.CommandContext(ctx, "git", "merge-base", left, right)
+	cmd.Dir = c.cwd
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err == nil {
+		return strings.TrimSpace(stdout.String()), true, nil
+	}
+
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return "", false, nil
+	}
+
+	message := strings.TrimSpace(stderr.String())
+	if message == "" {
+		message = strings.TrimSpace(stdout.String())
+	}
+	if message == "" {
+		message = err.Error()
+	}
+
+	return "", false, fmt.Errorf("git merge-base %s %s: %s", left, right, message)
+}
+
 func (c *Client) SwitchCreate(ctx context.Context, branch string) error {
 	_, err := c.run(ctx, "switch", "-c", branch)
 	return err
