@@ -104,10 +104,32 @@ if args[:2] == ["pr", "edit"]:
         print(f"unknown pr {number}", file=sys.stderr)
         sys.exit(1)
     base = find_flag(args, "--base", "")
+    title = find_flag(args, "--title", "")
+    body = find_flag(args, "--body", "")
     if base:
         pr["baseRefName"] = base
-        state["prs"][str(number)] = pr
-        save()
+    if title:
+        pr["title"] = title
+    if body:
+        pr["body"] = body
+    state["prs"][str(number)] = pr
+    save()
+    sys.exit(0)
+
+if args[:2] == ["pr", "close"]:
+    number = args[2]
+    pr = state.get("prs", {}).get(str(number))
+    if pr is None:
+        print(f"unknown pr {number}", file=sys.stderr)
+        sys.exit(1)
+    pr["state"] = "CLOSED"
+    comment = find_flag(args, "--comment", "")
+    if comment:
+        comments = pr.get("comments", [])
+        comments.append(comment)
+        pr["comments"] = comments
+    state["prs"][str(number)] = pr
+    save()
     sys.exit(0)
 
 if args[:2] == ["pr", "merge"]:
@@ -117,6 +139,20 @@ if args[:2] == ["pr", "merge"]:
         print(f"unknown pr {number}", file=sys.stderr)
         sys.exit(1)
     pr["mergedWithHead"] = find_flag(args, "--match-head-commit", "")
+    state["prs"][str(number)] = pr
+    save()
+    sys.exit(0)
+
+if args[:2] == ["pr", "comment"]:
+    number = args[2]
+    pr = state.get("prs", {}).get(str(number))
+    if pr is None:
+        print(f"unknown pr {number}", file=sys.stderr)
+        sys.exit(1)
+    body = find_flag(args, "--body", "")
+    comments = pr.get("comments", [])
+    comments.append(body)
+    pr["comments"] = comments
     state["prs"][str(number)] = pr
     save()
     sys.exit(0)

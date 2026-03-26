@@ -1,56 +1,102 @@
 # How stack works
 
-## Stacked PRs in plain language
+## The core idea
 
-A stacked PR flow splits one larger change into a chain of smaller pull
-requests.
+`stack` keeps the graph explicit first. Then you choose how it lands.
 
-Example:
+That gives you two valid outcomes:
 
-- `feature/base` targets `main`
-- `feature/child` targets `feature/base`
-- `feature/grandchild` targets `feature/child`
-
-That gives reviewers smaller PRs and clearer landing order. The tradeoff is that
-the branches and PR bases need to move together when something lower in the
-stack changes or merges.
+- a normal stacked PR flow where each tracked branch lands in order
+- a landing workflow where the graph stays useful for organization and repair, but one composed landing PR becomes the real merge target
 
 ## The model
 
-`stack` treats branches as the stack unit.
+`stack` uses a small number of explicit objects:
 
-- each tracked branch records an explicit parent
-- each tracked branch can have one ordinary GitHub PR
-- restacks move branches to match their recorded parents
-- sync refreshes PR state and proposes repairs when GitHub no longer matches local intent
+- tracked branches
+  - each tracked branch records one parent
+  - each tracked branch can have one ordinary GitHub PR
+- landing branches
+  - an ordinary local branch such as `stack/discovery-core`
+  - built from a selected portion of the tracked graph
+  - may carry explicit tickets, verification records, and landing PR linkage
+- verification records
+  - attached to a tracked branch or landing branch
+  - used by status, queue, and closeout
+- superseded PR metadata
+  - records which original PRs were replaced by a landing PR
+  - used to keep traceability clear and to drive closeout
 
-The repository still uses normal Git and GitHub objects. The tool adds a local
-layer of stack intent and recovery logic on top.
+The repo still uses ordinary Git branches and ordinary GitHub PRs. `stack`
+adds local intent and repair metadata on top.
 
-## The normal loop
+## The standard stacked-PR loop
 
-1. Create or track branches in a stack.
-2. Use `stack status` to inspect the hierarchy and current health.
-3. Use `stack restack` when a parent branch moved.
-4. Use `stack submit` to push branches and create or update their PRs.
-5. Use `stack queue` when the bottom PR is healthy and ready to land.
-6. Use `stack sync` after merges or GitHub-side changes.
+Use this when each tracked branch should land as its own PR:
+
+1. create or track branches in a stack
+2. inspect health with `stack status`
+3. restack when a parent moved
+4. submit the branches with `stack submit`
+5. queue the healthy trunk-bound PR with `stack queue`
+6. sync after merges with `stack sync`
+
+## The landing workflow loop
+
+Use this when the graph should end in one combined landing PR:
+
+1. adopt or repair the graph
+2. compose a strict landing branch with `stack compose`
+3. attach verification with `stack verify add`
+4. mark original PRs as superseded with `stack supersede`
+5. queue the landing PR with `stack queue`
+6. close out superseded PRs and tickets with `stack closeout`
+
+The important distinction is operational, not theoretical:
+
+- source PRs remain useful for traceability and review history
+- the landing PR becomes the real merge target
 
 ## Merge queue
 
-Merge queue matters most at the bottom of the stack.
+Merge queue only matters for the real merge target.
 
-When the bottom PR is ready, `stack queue` checks that the local branch, pushed
-branch, and PR head all match, then hands that PR to GitHub auto-merge or merge
-queue. After the merge lands, `stack sync` helps advance the remaining stack to
-the next safe state.
+Sometimes that target is the bottom tracked PR. Sometimes it is a landing PR.
 
-Because `stack` delegates that final step to GitHub, the repository must have
-auto-merge enabled. On repos with merge queue configured, GitHub applies queue
-policy after the handoff.
+`stack queue` checks that:
+
+- the PR targets trunk
+- the local head matches the pushed head
+- the PR head matches the current branch head
+- the latest verification passed and still matches the current head when verification exists
+
+Then it hands off through `gh pr merge --auto`.
+
+`stack` does not decide whether the PR becomes auto-merge or merge queue entry.
+GitHub does.
+
+## Why the landing workflow exists
+
+Real repos often produce a pile of already-open PRs before anyone has turned the
+shape into a clean dependency chain.
+
+In that situation, the graph is still useful. It tells you:
+
+- what depends on what
+- what to restack when lower branches move
+- how to build one strict verified landing branch from the exact subset you want to ship
+
+That is the move from “branch graph management” to “landing orchestration.”
 
 ## How this differs from Graphite and similar tools
 
-The important difference is workflow shape: `stack` keeps branches and PRs
-ordinary, stores stack intent locally in the repo, and prefers explicit repair
-when state drifts instead of hiding that drift.
+The main difference is workflow shape, not command count:
+
+- ordinary branches
+- ordinary GitHub PRs
+- explicit local metadata
+- visible previews and repair loops
+- no hosted control plane
+
+That makes `stack` easier to adopt in repos where not everyone wants to depend
+on the same end-to-end workflow tool.

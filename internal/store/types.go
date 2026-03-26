@@ -1,12 +1,14 @@
 package store
 
 type RepoState struct {
-	Version       int                     `json:"version"`
-	Repo          string                  `json:"repo,omitempty"`
-	DefaultRemote string                  `json:"defaultRemote"`
-	Trunk         string                  `json:"trunk"`
-	UpdatedAt     string                  `json:"updatedAt"`
-	Branches      map[string]BranchRecord `json:"branches"`
+	Version       int                             `json:"version"`
+	Repo          string                          `json:"repo,omitempty"`
+	DefaultRemote string                          `json:"defaultRemote"`
+	Trunk         string                          `json:"trunk"`
+	UpdatedAt     string                          `json:"updatedAt"`
+	Branches      map[string]BranchRecord         `json:"branches"`
+	Landings      map[string]LandingRecord        `json:"landings,omitempty"`
+	Verifications map[string][]VerificationRecord `json:"verifications,omitempty"`
 }
 
 type BranchRecord struct {
@@ -32,6 +34,27 @@ type PullRequest struct {
 type RestackMetadata struct {
 	LastParentHeadOID string `json:"lastParentHeadOid,omitempty"`
 	LastRestackedAt   string `json:"lastRestackedAt,omitempty"`
+}
+
+type VerificationRecord struct {
+	CheckType  string `json:"checkType"`
+	Identifier string `json:"identifier,omitempty"`
+	Passed     bool   `json:"passed"`
+	HeadOID    string `json:"headOid,omitempty"`
+	RecordedAt string `json:"recordedAt"`
+	Note       string `json:"note,omitempty"`
+	Score      *int   `json:"score,omitempty"`
+}
+
+type LandingRecord struct {
+	BaseBranch                string   `json:"baseBranch"`
+	SourceBranches            []string `json:"sourceBranches"`
+	Tickets                   []string `json:"tickets,omitempty"`
+	LandingPRNumber           int      `json:"landingPrNumber,omitempty"`
+	SupersededPRs             []int    `json:"supersededPrs,omitempty"`
+	CloseSupersededAfterMerge bool     `json:"closeSupersededAfterMerge,omitempty"`
+	SupersededAt              string   `json:"supersededAt,omitempty"`
+	CreatedAt                 string   `json:"createdAt"`
 }
 
 type OperationState struct {

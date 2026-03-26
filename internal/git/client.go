@@ -16,6 +16,11 @@ type Client struct {
 	cwd string
 }
 
+type Commit struct {
+	OID     string
+	Subject string
+}
+
 type RepoPaths struct {
 	Root      string
 	GitDir    string
@@ -149,8 +154,25 @@ func (c *Client) SwitchCreate(ctx context.Context, branch string) error {
 	return err
 }
 
+func (c *Client) SwitchCreateFrom(ctx context.Context, branch string, startPoint string) error {
+	_, err := c.run(ctx, "switch", "-c", branch, startPoint)
+	return err
+}
+
 func (c *Client) FetchPrune(ctx context.Context, remote string) error {
 	_, err := c.run(ctx, "fetch", "--prune", remote)
+	return err
+}
+
+func (c *Client) FetchBranch(ctx context.Context, remote string, sourceBranch string, localBranch string) error {
+	refspec := fmt.Sprintf("refs/heads/%s:refs/heads/%s", sourceBranch, localBranch)
+	_, err := c.run(ctx, "fetch", remote, refspec)
+	return err
+}
+
+func (c *Client) FetchBranchForce(ctx context.Context, remote string, sourceBranch string, localBranch string) error {
+	refspec := fmt.Sprintf("+refs/heads/%s:refs/heads/%s", sourceBranch, localBranch)
+	_, err := c.run(ctx, "fetch", remote, refspec)
 	return err
 }
 
@@ -233,6 +255,38 @@ func (c *Client) RemoteRepoSlug(ctx context.Context, remote string) (string, err
 
 func (c *Client) RangeDiff(ctx context.Context, oldBase string, newBranch string) (string, error) {
 	return c.output(ctx, "range-diff", fmt.Sprintf("%s...%s", oldBase, newBranch))
+}
+
+func (c *Client) RangeCommits(ctx context.Context, base string, head string) ([]Commit, error) {
+	output, err := c.output(ctx, "log", "--reverse", "--format=%H%x1f%s", fmt.Sprintf("%s..%s", base, head))
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(output) == "" {
+		return nil, nil
+	}
+
+	lines := strings.Split(output, "\n")
+	commits := make([]Commit, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+
+		parts := strings.SplitN(line, "\x1f", 2)
+		commit := Commit{OID: strings.TrimSpace(parts[0])}
+		if len(parts) == 2 {
+			commit.Subject = strings.TrimSpace(parts[1])
+		}
+		commits = append(commits, commit)
+	}
+
+	return commits, nil
+}
+
+func (c *Client) CherryPick(ctx context.Context, commit string) error {
+	_, err := c.run(ctx, "cherry-pick", commit)
+	return err
 }
 
 func (c *Client) output(ctx context.Context, args ...string) (string, error) {

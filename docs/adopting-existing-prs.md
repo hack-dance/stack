@@ -1,19 +1,15 @@
 # Adopting existing PRs
 
-`stack` is easiest when you start with a stack from the beginning, but that is
-not the only useful case.
+Use this guide when the repo already has open PRs and you need to turn their
+heads into an explicit branch graph.
 
-If your repo already has a large set of open PRs, you can use `stack` to turn
-that pile into an explicit branch graph so it becomes easier to:
+That graph is the prerequisite for both supported landing paths:
 
-- test a composed set of changes locally
-- see the intended landing order
-- move related PRs into a dependency chain
-- restack and repair larger sets when conflicts show up
+- ordinary branch-by-branch stacked landing
+- one composed landing branch and landing PR
 
-This is especially useful when a team or agent workflow is producing many PRs in
-parallel and you need to turn that output into something reviewable and
-mergeable.
+This guide is about making the graph explicit. For the full combined-landing
+operator flow, continue with [landing-workflow.md](landing-workflow.md).
 
 ## What `stack` can do today
 
@@ -21,28 +17,24 @@ mergeable.
 dependency graph for you.
 
 You still choose the parent chain. The tool then helps you keep that chain
-consistent and repairable.
+repairable.
 
-That means V1 is good for:
+That makes it good for:
 
-- grouping a set of related PRs under a chosen base branch
-- reordering a chain once you know the intended dependency structure
-- moving branches to new parents and retargeting their PR bases
+- grouping a related PR set under a chosen base
+- reordering the chain once you know the intended dependency structure
 - restacking large dependent sets after lower branches change or merge
-
-It is not trying to guess the stack structure from commit history alone.
+- deciding later whether the graph should land branch-by-branch or as one landing batch
 
 ## Before you start
 
 Make sure you have:
 
 - a local clone of the repo
-- local branches for the PR heads you want to organize
 - a rough view of which PRs depend on which others
+- permission to fetch PR heads if they do not exist locally yet
 
-If the branches only exist on GitHub, fetch them first.
-
-## A practical adoption workflow
+## Practical adoption flow
 
 ### 1. Pick the scope
 
@@ -50,11 +42,12 @@ Do not start with all 30 PRs unless they really belong together.
 
 Usually the better move is:
 
-- make one stack per feature area or dependency chain
+- one graph per feature area or dependency chain
 - keep independent PR groups separate
 - pick a clear bottom branch for each group
 
-You are trying to create legible review and merge order, not one giant tower.
+You are trying to create one legible review and merge shape, not one giant
+tower.
 
 ### 2. Initialize the repo
 
@@ -62,24 +55,28 @@ You are trying to create legible review and merge order, not one giant tower.
 stack init --trunk main --remote origin
 ```
 
-### 3. Track the branches you want in the stack
+### 3. Adopt the PR heads
 
-Start at the bottom and work upward:
+Use `stack adopt pr` when the unit you care about is the PR itself:
+
+```bash
+stack adopt pr 353 --parent main
+stack adopt pr 354 --parent pr/353
+stack adopt pr 363 --parent pr/354
+stack adopt pr 364 --parent pr/363
+```
+
+Use `stack track` when the local branches already exist and you do not need the
+PR lookup or fetch path:
 
 ```bash
 stack track feature/base --parent main
 stack track feature/parser --parent feature/base
-stack track feature/runtime --parent feature/parser
-stack track feature/ui --parent feature/runtime
 ```
 
-When the parent branch has moved since a child branch was originally cut,
-`stack track` records a merge-base-style restack anchor instead of blindly
-assuming the current parent tip. That makes stale existing PR heads adoptable
-without breaking the first `stack restack`.
-
-If the first parent chain is wrong, that is fine. Get a draft graph in place
-first.
+When the parent branch moved since a child branch was originally cut, adoption
+records a merge-base-style restack anchor instead of assuming the current parent
+tip. That makes stale PR heads repairable without poisoning the first restack.
 
 ### 4. Inspect drift and PR linkage
 
@@ -92,98 +89,73 @@ This tells you:
 
 - which tracked branches are healthy
 - which branches already have linked PRs
-- which PR bases or heads disagree with your intended stack
-- whether a branch needs `stack submit`, `stack restack`, or manual metadata repair next
+- which PR bases or heads disagree with your intended graph
+- whether the next step is `submit`, `restack`, or manual repair
 
 ### 5. Fix the shape
 
-If a branch belongs elsewhere, move it:
+If a branch belongs elsewhere:
 
 ```bash
-stack move feature/ui --parent feature/base
+stack move pr/364 --parent pr/354
 ```
 
-If lower branches have already moved, restack:
+If lower branches already moved:
 
 ```bash
 stack restack --all
 ```
 
-When the local stack shape looks right, update GitHub:
+When the local graph looks right, update GitHub:
 
 ```bash
 stack submit --all
 ```
 
-That is the step that turns your intended parent graph into updated PR bases and
-branch tips on GitHub.
+That is the step that makes GitHub match your intended parent graph.
 
-When `stack submit` creates a PR during adoption, it uses the tip commit subject
-and body by default. If the branch tip has no commit body yet, `stack` uses a
-deterministic fallback body so the first adoption submit stays non-interactive
-and reviewable.
+## When to compose instead of submitting directly
 
-## Large sets: how to keep them manageable
+Do not force every adopted PR set into a strict chain if the real goal is one
+combined landing PR.
+
+Compose a landing branch when:
+
+- the originals should remain traceability-only
+- you want to verify one strict subset before merge
+- later follow-up commits should stay out of the first landing
+- queueing the original PRs directly would create noise or ambiguity
+
+That is the normal move for a larger existing PR pile.
+
+## After adoption
+
+From here you have two choices:
+
+If each tracked branch should land as its own PR:
+
+- continue with [usage.md](usage.md)
+
+If the graph should end in one landing PR:
+
+- continue with [landing-workflow.md](landing-workflow.md)
+
+## Keep larger sets manageable
 
 For a larger PR set, the safest pattern is:
 
 1. group PRs into smaller dependency chains
-2. adopt one chain at a time
+2. adopt one graph at a time
 3. run `stack status` after each batch
-4. restack and submit the chain before moving to the next one
+4. restack and submit before moving to the next graph
 
-That gives you tighter feedback loops and makes conflicts easier to localize.
+That gives tighter feedback loops and makes conflicts easier to localize.
 
-If you try to adopt everything at once, you can still do it, but debugging
-parent mistakes gets slower and noisier.
+## Realistic expectation
 
-If `stack submit` reports multiple open PRs for one head branch, stop and clean
-that up before continuing. `stack` refuses to guess which open PR owns a reused
-head name.
-
-## Testing a composed set
-
-Once the branches are tracked, the stack graph gives you a clearer local test
-surface.
-
-You can:
-
-- check out the top branch in a chain and test the full composed set
-- move or split branches when the integration shape is wrong
-- restack after conflict resolution without manually retargeting every PR again
-
-That is often the difference between “30 unrelated PRs” and “5 understandable
-stacks.”
-
-## Merge order
-
-After adoption, the normal landing flow is:
-
-1. make sure the bottom branch is healthy
-2. run `stack submit` so the pushed heads and PR bases are current
-3. run `stack queue <bottom-branch>`
-4. after merge, run `stack sync`
-5. repeat for the next bottom branch
-
-That gives you a controlled path for landing larger change sets in order.
-
-## Conflict handling on larger stacks
-
-The main reason to adopt an explicit stack is conflict handling.
-
-When a lower branch changes:
-
-- `stack restack` moves the dependent branches in order
-- `stack continue` and `stack abort` give you a recovery loop if a rebase stops
-- `stack sync` helps after merges when PR bases or local metadata drift
-
-You still resolve the Git conflicts, but the tool keeps the branch order and PR
-bases aligned while you do it.
-
-## A realistic expectation
-
-For existing PRs, `stack` is best thought of as a repair and organization layer,
-not a magic importer.
+For existing PRs, `stack` is a repair and organization layer, not a magic
+importer.
 
 You choose the intended structure. Once that structure is explicit, `stack`
-helps you keep it stable.
+helps you keep it stable and use it as the basis for either ordinary stacked
+landing or one explicit landing batch.

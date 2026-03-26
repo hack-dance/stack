@@ -70,6 +70,33 @@ func (c *Client) ViewPR(ctx context.Context, number int) (store.PullRequest, err
 }
 
 func (c *Client) FindPRByHead(ctx context.Context, branch string) (store.PullRequest, error) {
+	prs, err := c.ListPRsByHead(ctx, branch)
+	if err != nil {
+		return store.PullRequest{}, err
+	}
+
+	open := make([]store.PullRequest, 0, len(prs))
+	for _, pr := range prs {
+		if pr.State == "OPEN" {
+			open = append(open, pr)
+		}
+	}
+
+	switch len(open) {
+	case 0:
+		return store.PullRequest{}, nil
+	case 1:
+		return open[0], nil
+	default:
+		numbers := make([]string, 0, len(open))
+		for _, pr := range open {
+			numbers = append(numbers, fmt.Sprintf("#%d", pr.Number))
+		}
+		return store.PullRequest{}, fmt.Errorf("multiple open pull requests match head %q: %s; close or retarget the duplicate until one open PR remains, then rerun `stack submit %s`", branch, strings.Join(numbers, ", "), branch)
+	}
+}
+
+func (c *Client) ListPRsByHead(ctx context.Context, branch string) ([]store.PullRequest, error) {
 	output, err := c.run(
 		ctx,
 		"pr",
@@ -82,37 +109,20 @@ func (c *Client) FindPRByHead(ctx context.Context, branch string) (store.PullReq
 		"id,number,url,baseRefName,baseRefOid,headRefName,headRefOid,state,isDraft",
 	)
 	if err != nil {
-		return store.PullRequest{}, err
+		return nil, err
 	}
 
 	var payload []pullRequestPayload
 	if err := json.Unmarshal([]byte(output), &payload); err != nil {
-		return store.PullRequest{}, err
+		return nil, err
 	}
 
-	if len(payload) == 0 {
-		return store.PullRequest{}, nil
-	}
-
-	open := make([]pullRequestPayload, 0, len(payload))
+	prs := make([]store.PullRequest, 0, len(payload))
 	for _, pr := range payload {
-		if pr.State == "OPEN" {
-			open = append(open, pr)
-		}
+		prs = append(prs, pr.toStorePullRequest())
 	}
 
-	switch len(open) {
-	case 0:
-		return store.PullRequest{}, nil
-	case 1:
-		return open[0].toStorePullRequest(), nil
-	default:
-		numbers := make([]string, 0, len(open))
-		for _, pr := range open {
-			numbers = append(numbers, fmt.Sprintf("#%d", pr.Number))
-		}
-		return store.PullRequest{}, fmt.Errorf("multiple open pull requests match head %q: %s; close or retarget the duplicate until one open PR remains, then rerun `stack submit %s`", branch, strings.Join(numbers, ", "), branch)
-	}
+	return prs, nil
 }
 
 func (c *Client) CreatePR(ctx context.Context, base string, head string, title string, body string, draft bool) (store.PullRequest, error) {
@@ -144,6 +154,24 @@ func (c *Client) EditPRBase(ctx context.Context, number int, base string) error 
 	return err
 }
 
+func (c *Client) EditPR(ctx context.Context, number int, base string, title string, body string) error {
+	args := []string{"pr", "edit", fmt.Sprintf("%d", number)}
+	if strings.TrimSpace(base) != "" {
+		args = append(args, "--base", base)
+	}
+	if strings.TrimSpace(title) != "" {
+		args = append(args, "--title", title)
+	}
+	if strings.TrimSpace(body) != "" {
+		args = append(args, "--body", body)
+	}
+	if len(args) == 3 {
+		return nil
+	}
+	_, err := c.run(ctx, args...)
+	return err
+}
+
 func (c *Client) MergePR(ctx context.Context, number int, headOID string, strategy string) error {
 	strategyFlag := "--merge"
 	switch strategy {
@@ -165,6 +193,20 @@ func (c *Client) MergePR(ctx context.Context, number int, headOID string, strate
 		"--match-head-commit",
 		headOID,
 	)
+	return err
+}
+
+func (c *Client) CommentPR(ctx context.Context, number int, body string) error {
+	_, err := c.run(ctx, "pr", "comment", fmt.Sprintf("%d", number), "--body", body)
+	return err
+}
+
+func (c *Client) ClosePR(ctx context.Context, number int, comment string) error {
+	args := []string{"pr", "close", fmt.Sprintf("%d", number)}
+	if strings.TrimSpace(comment) != "" {
+		args = append(args, "--comment", comment)
+	}
+	_, err := c.run(ctx, args...)
 	return err
 }
 

@@ -1,10 +1,10 @@
 # Testing
 
-`stack` now has three verification layers:
+`stack` now has three verification layers.
 
-## 1. Unit and Fixture Coverage
+## 1. Unit and fixture coverage
 
-Run the normal test suite:
+Run the normal suite:
 
 ```bash
 mise exec -- go test ./...
@@ -17,13 +17,19 @@ This covers:
 - stack validation rules, including cycles and duplicate PR linkage
 - git ancestor checks and explicit `--force-with-lease` behavior
 - command-level flows for:
-  - `stack sync --apply`
+  - `stack adopt pr`
+  - `stack compose`
+  - `stack verify add`
+  - `stack verify list`
+  - `stack supersede`
+  - `stack closeout`
   - `stack submit`
+  - `stack sync --apply`
   - `stack queue`
 
 Those command tests use real temporary git repositories and a fake `gh` binary.
 
-## 2. Local Smoke Checks
+## 2. Local smoke checks
 
 For a quick local alpha check:
 
@@ -46,29 +52,44 @@ mise exec -- go build -o "$tmpdir/stack" ./cmd/stack
 )
 ```
 
-## 3. Real GitHub Sandbox Checks
+## 3. Real GitHub sandbox checks
 
 These are opt-in and non-destructive by default.
 
-### Seed Real Sandbox PR Fixtures
+### Pin the GitHub identity
+
+If multiple `gh` accounts exist on the machine, do not rely on active-account
+state alone for live sandbox runs. Pin `GH_TOKEN` to the intended account:
+
+```bash
+gh auth switch -u roodboi
+TOKEN="$(gh auth token)"
+GH_TOKEN="$TOKEN" scripts/sandbox/seed-fixtures.sh
+```
+
+That avoids account drift during long-running scripts and makes auth failures
+easier to interpret.
+
+### Seed real sandbox PR fixtures
 
 Create or refresh the deterministic sandbox PR set in `hack-dance/stack`:
 
 ```bash
-scripts/sandbox/seed-fixtures.sh
-scripts/sandbox/report-fixtures.sh
+GH_TOKEN="$TOKEN" scripts/sandbox/seed-fixtures.sh
+GH_TOKEN="$TOKEN" scripts/sandbox/report-fixtures.sh
 ```
 
-Advance only the trunk-drift branch when you want to trigger a real rebase conflict later:
+Advance only the trunk-drift branch when you want to trigger a real rebase
+conflict later:
 
 ```bash
-scripts/sandbox/advance-conflict.sh
+GH_TOKEN="$TOKEN" scripts/sandbox/advance-conflict.sh
 ```
 
 Clean everything back up:
 
 ```bash
-scripts/sandbox/cleanup-fixtures.sh
+GH_TOKEN="$TOKEN" scripts/sandbox/cleanup-fixtures.sh
 ```
 
 Verify the live sandbox repo:
@@ -84,20 +105,21 @@ STACK_GITHUB_SANDBOX_PR_NUMBER=<pr-number> \
 mise exec -- go test ./internal/github -run TestSandboxViewExistingPR -v
 ```
 
-Run the destructive end-to-end scenarios in a temp clone:
+Run the end-to-end scenarios in a temp clone:
 
 ```bash
-scripts/sandbox/run-live-queue.sh
-scripts/sandbox/run-live-sync.sh
-scripts/sandbox/run-live-conflict.sh
+GH_TOKEN="$TOKEN" scripts/sandbox/run-live-queue.sh
+GH_TOKEN="$TOKEN" scripts/sandbox/run-live-sync.sh
+GH_TOKEN="$TOKEN" scripts/sandbox/run-live-conflict.sh
 ```
 
-These scripts intentionally mutate the live sandbox repo, then reseed the consumed fixtures so the next run starts from a known state.
+These scripts intentionally mutate the live sandbox repo, then reseed the
+consumed fixtures so the next run starts from a known state.
 
 - `run-live-queue.sh`
   - verifies `stack submit` can refresh a real PR
-  - verifies `stack queue` works against GitHub with `gh pr merge --auto --merge --match-head-commit`
-  - verifies the queue fixture can be reseeded after the PR is merged
+  - verifies `stack queue` can hand off a real PR through `gh pr merge --auto --merge --match-head-commit`
+  - a final GitHub `mergeStateStatus` of `BLOCKED` can still count as a successful handoff when branch protection or queue policy takes over after the auto-merge request
 - `run-live-sync.sh`
   - verifies `stack sync --apply` reparents a clean child after its parent PR is merged
   - verifies a clean two-hop advancement from parent to child to grandchild
@@ -114,28 +136,47 @@ Optional environment:
 - `STACK_GITHUB_SANDBOX_REPO_ROOT`
   - overrides the repo root used for the sandbox tests
 
-## Current Boundary
+## Landing-workflow verification
 
-The normal suite now exercises most risky local behaviors and GitHub command wiring, but it still does not fully prove:
+When you change landing-orchestration behavior, do not stop at the generic
+queue/restack loop. Make sure the local command suite covers:
 
-- real `gh pr create/edit/merge` behavior against GitHub
+- `compose`
+- `verify`
+- `supersede`
+- `closeout`
+- landing-aware `queue`
+
+If the change touches GitHub mutation paths for landing PR creation, edit, or
+closeout, pair the local suite with a pinned-token sandbox run.
+
+## Current boundary
+
+The normal suite now exercises most risky local behaviors and GitHub command
+wiring, but it still does not fully prove:
+
+- real `gh pr create/edit/close/merge` behavior against GitHub in every account configuration
 - merge queue branch protection behavior
-- end-to-end submit/sync/queue flows against the live `hack-dance/stack` sandbox
+- every end-to-end landing-orchestration scenario against the live sandbox repo
 
-Those still need deliberate sandbox runs before calling V1 feature complete.
+Those still need deliberate sandbox runs before calling the feature set fully
+proven.
 
-## Strongest Current Loop
+## Strongest current loop
 
-For work that changes queue, restack, submit, or crash-recovery behavior, use this loop:
+For work that changes queue, restack, submit, landing orchestration, or
+crash-recovery behavior, use this loop:
 
 ```bash
 mise exec -- go test ./...
 mise exec -- go build ./...
-scripts/sandbox/seed-fixtures.sh
-scripts/sandbox/run-live-queue.sh
-scripts/sandbox/run-live-sync.sh
-scripts/sandbox/run-live-conflict.sh
-scripts/sandbox/report-fixtures.sh
+gh auth switch -u roodboi
+TOKEN="$(gh auth token)"
+GH_TOKEN="$TOKEN" scripts/sandbox/seed-fixtures.sh
+GH_TOKEN="$TOKEN" scripts/sandbox/run-live-queue.sh
+GH_TOKEN="$TOKEN" scripts/sandbox/run-live-sync.sh
+GH_TOKEN="$TOKEN" scripts/sandbox/run-live-conflict.sh
+GH_TOKEN="$TOKEN" scripts/sandbox/report-fixtures.sh
 ```
 
 That combination gives:

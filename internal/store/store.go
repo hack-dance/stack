@@ -64,6 +64,8 @@ func (s *Store) InitState(ctx context.Context, trunk string, remote string, repo
 		Trunk:         trunk,
 		UpdatedAt:     time.Now().UTC().Format(time.RFC3339),
 		Branches:      map[string]BranchRecord{},
+		Landings:      map[string]LandingRecord{},
+		Verifications: map[string][]VerificationRecord{},
 	}
 
 	if err := s.writeJSON(paths.StateFile, state); err != nil {
@@ -94,6 +96,12 @@ func (s *Store) ReadState(ctx context.Context) (RepoState, error) {
 
 	if state.Branches == nil {
 		state.Branches = map[string]BranchRecord{}
+	}
+	if state.Landings == nil {
+		state.Landings = map[string]LandingRecord{}
+	}
+	if state.Verifications == nil {
+		state.Verifications = map[string][]VerificationRecord{}
 	}
 
 	return state, nil
