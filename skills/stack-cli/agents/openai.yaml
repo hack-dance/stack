@@ -1,7 +1,7 @@
 interface:
   display_name: "Stack CLI"
-  short_description: "Safe stacked-PR workflows for stack"
-  default_prompt: "Use $stack-cli to guide a safe `stack` workflow with previews first, explicit parents, and repairable restacks."
+  short_description: "Safe stacked-PR and landing-orchestration workflows for stack"
+  default_prompt: "Use $stack-cli to guide a safe `stack` workflow with explicit graph setup, the right landing path, previews first, and repairable restacks."
 
 policy:
   allow_implicit_invocation: true
