@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.6](https://github.com/hack-dance/stack/compare/v0.1.5...v0.1.6) (2026-03-26)
+
+
+### Bug Fixes
+
+* make submit and repair guidance actionable ([00e3fde](https://github.com/hack-dance/stack/commit/00e3fdecf3da1effa7005dd9af5dd90c4684d722))
+* make submit and repair guidance actionable ([64ac372](https://github.com/hack-dance/stack/commit/64ac372eb984c92413b8d83e84b47a8503df2479))
+
 ## [0.1.5](https://github.com/hack-dance/stack/compare/v0.1.4...v0.1.5) (2026-03-26)
 
 
