@@ -8,7 +8,7 @@ For the current operator-facing workflow, use
 
 This document captures the next layer of work that became obvious while using
 `stack` to turn a pile of existing PRs into one verified landing PR in
-`TeamSidewinder/event-agent`.
+a private application repository.
 
 The current tool is already useful for:
 
@@ -32,7 +32,7 @@ parallel, they are the difference between a stack tool and a landing workflow.
 
 ## What we learned from a real workflow
 
-The `event-agent` discovery batch looked like this:
+The discovery batch looked like this:
 
 - original PRs: `#353`, `#354`, `#363`, `#364`
 - intended outcome: one combined landing PR with the verified set
